@@ -1,0 +1,361 @@
+# Qwen3-Omni nightly Buildkite REST API research
+
+This note defines the read-only Buildkite API contract for collecting the most
+recent 20 CUDA `main` nightly builds and the Qwen3-Omni jobs, attempts, logs,
+and artifacts within them. It is based on repository commit
+`4cd667875f983819414ca6a19cf612b58e6c138e` and Buildkite's official
+documentation as checked on 2026-08-18. It does not contain live Buildkite
+data or credentials.
+
+## Conclusions
+
+- Query the pipeline's builds with the server-side `branch=main` filter, then
+  filter locally on `source == "schedule"` and `env.NIGHTLY == "1"`. Buildkite
+  documents `source` as the trigger kind; `scheduled_at` is present on all
+  builds and is **not** evidence that a build came from a schedule.
+- The REST build model does not document a schedule ID. A REST-only collector
+  therefore cannot prove which schedule created a build when a pipeline has
+  several schedules with indistinguishable branch/environment settings. Such
+  builds must be retained as `schedule_unresolved`, not silently classified.
+- Fetch every job attempt explicitly. Latest-attempt-only data undercounts
+  failures, flakes, and GPU-hours.
+- The API supplies job wall-clock timestamps, not GPU count, pytest case
+  duration, or model-start count. Those values require repository configuration,
+  logs, or test artifacts and must carry provenance and confidence.
+
+The current repository makes the environment check meaningful: CUDA nightly
+upload is gated by `main` plus `NIGHTLY=1`, while PR labels can upload the same
+nightly steps ([uploader logic](../../../.buildkite/common/scripts/upload_pipeline.py#L61),
+[bootstrap steps](../../../.buildkite/cuda/bootstrap-upload-steps.yml#L39)).
+Consequently, job names or the presence of a nightly group are insufficient to
+separate scheduled builds from PR builds.
+
+## Authentication and least privilege
+
+Buildkite REST API v2 uses HTTPS under `https://api.buildkite.com/v2`, returns
+JSON, and accepts a bearer token in the `Authorization` header. Basic HTTP
+authentication is not supported
+([REST authentication](https://buildkite.com/docs/apis/rest-api#authentication)).
+
+Use a dedicated token supplied only through an environment variable such as
+`BUILDKITE_API_TOKEN`. Do not put it in a query string, checked-in config,
+cache key, raw-response filename, log line, report, or exception. The collector
+needs only these scopes:
+
+| Data | Scope |
+| --- | --- |
+| Builds, jobs, and attempts | `read_builds` |
+| Job logs | `read_build_logs` |
+| Artifact metadata and content | `read_artifacts` |
+| Pipeline schedule definitions | `read_pipelines` |
+
+These are separate granular permissions in Buildkite's
+[token scope table](https://buildkite.com/docs/apis/managing-api-tokens#token-scopes).
+No `write_*` scope is required. Avoid `read_job_env`: the build payload already
+contains the build environment needed for classification, and job environments
+can contain unrelated sensitive values.
+
+An illustrative request is:
+
+```text
+Authorization: Bearer ${BUILDKITE_API_TOKEN}
+```
+
+The token remains subject to its user's organization and pipeline access. Store
+raw logs and artifacts as sensitive CI data, redact them before reporting, and
+never persist the short-lived signed artifact download URL.
+
+## Anonymous public-page fallback
+
+When the organization token is unavailable, the
+[public pipeline page](https://buildkite.com/vllm/vllm-omni/builds?branch=main)
+exposes enough anonymous read-only data for this repository's analysis. These
+routes are used by Buildkite's frontend but are not part of the documented REST
+API, so they can change without a REST API deprecation notice.
+
+The collector:
+
+- enumerates build links from the public build search with `branch=main` and
+  the exact message query `Scheduled nightly build`;
+- reads `/builds/{number}.json`, then follows `build_data_base_path` to the
+  jobs collection, and follows each job's `base_path` to logs and artifacts;
+- requests retried attempts explicitly and keeps only artifact metadata.
+
+Because public build JSON does not expose build environment or schedule
+definitions, acceptance requires `branch_name == "main"`, `source ==
+"schedule"`, no pull request, and exact nightly message equality. The collector
+excludes UI rebuilds even when they retain the nightly message, excludes builds
+without matching Qwen3-Omni jobs, and continues scanning until 20 valid
+executions are accepted.
+
+This path has weaker provenance than authenticated REST: it cannot verify
+`NIGHTLY=1`, `WEEKLY!=1`, or the originating schedule definition. The report
+states that limitation and retains rejected/ambiguous candidates as
+`schedule_unresolved`. It also sanitizes cached history by removing raw logs
+and signed artifact download URLs.
+
+## Selecting exactly the nightly sample
+
+### 1. Read and record schedule definitions
+
+Call:
+
+```text
+GET /v2/organizations/{org}/pipelines/{pipeline}/schedules
+```
+
+The response is paginated and exposes `id`, `label`, `cronline`, `message`,
+`commit`, `branch`, `env`, `enabled`, and `next_build_at`; it requires
+`read_pipelines`
+([Pipeline schedules API](https://buildkite.com/docs/apis/rest-api/pipeline-schedules)).
+Record enabled definitions whose `branch` is `main` and whose environment sets
+`NIGHTLY=1`. Use their message and cron window as supporting audit evidence.
+
+This endpoint describes schedules, but the documented REST build payload has no
+schedule ID. Schedule message/cron-time matching is therefore corroboration,
+not a guaranteed foreign-key join. Do not drop a build merely because Buildkite
+created it a few minutes away from its cron time: scheduled builds are only
+guaranteed to start within a ten-minute window
+([Scheduled builds](https://buildkite.com/docs/pipelines/configure/workflows/scheduled-builds)).
+
+### 2. Page through `main` builds newest first
+
+Start with metadata only:
+
+```text
+GET /v2/organizations/{org}/pipelines/{pipeline}/builds
+    ?branch=main
+    &exclude_jobs=true
+    &exclude_pipeline=true
+    &per_page=100
+```
+
+Pipeline build results are ordered newest first. Follow the response `Link`
+header's `rel="next"` URL and stop only after 20 accepted builds have been
+accumulated. Build listing uses `page`/`per_page`; the default is 30 and maximum
+is 100 ([Builds API](https://buildkite.com/docs/apis/rest-api/builds#list-builds-for-a-pipeline),
+[REST pagination](https://buildkite.com/docs/apis/rest-api#pagination)). Do not
+assume the first 20 `main` builds are nightly.
+
+Apply this local predicate:
+
+```text
+build.branch == "main"
+and build.source == "schedule"
+and build.env["NIGHTLY"] == "1"
+and build.env.get("WEEKLY") != "1"
+```
+
+`source` is documented as one of `webhook`, `api`, `ui`, `trigger_job`, or
+`schedule`. Thus the predicate excludes PR/webhook, API, UI/manual, and trigger
+step builds even if they ran the same YAML. Also retain `number`, `id`, `commit`,
+`state`, `created_at`, `started_at`, `finished_at`, `pull_request`, and
+`rebuilt_from` for auditability
+([build data model](https://buildkite.com/docs/apis/rest-api/builds#build-data-model)).
+
+The Builds API does not document a `source` query parameter, so the source
+filter must be client-side. Do not use `scheduled_at` as a substitute: Buildkite
+defines it for every build and explains that pipeline uploads can copy it
+([timestamp attributes](https://buildkite.com/docs/apis/rest-api/builds#timestamp-attributes)).
+
+Classification rules:
+
+- Accept only the full predicate above as `scheduled_nightly`.
+- If `source == "schedule"` and `branch == "main"` but `NIGHTLY` is absent,
+  ambiguous, or conflicts with the schedule definitions, label the record
+  `schedule_unresolved` and exclude it from definitive nightly statistics.
+- Keep canceled, skipped, blocked, or incomplete builds in the 20-build audit
+  sample, but mark whether each contains a valid Qwen3-Omni execution. Do not
+  add `state=finished`: Buildkite documents that shortcut as only
+  `passed`/`failed`/`blocked`/`canceled`, so it can hide other states.
+- Select the most recent 20 created nightlies, not the most recent 20 successes.
+  Statistics whose denominator is "valid executions" must state that denominator
+  separately.
+
+If fewer than 20 unambiguous builds are available, report the smaller sample;
+do not fill it with manual, PR, weekly, or unresolved builds.
+
+## Jobs, retries, logs, and artifacts
+
+### Jobs and attempts
+
+For each selected build number, call:
+
+```text
+GET /v2/organizations/{org}/pipelines/{pipeline}/builds/{number}/jobs
+    ?group_key=nightly-omni-test-group
+    &include_retried_jobs=true
+    &per_page=100
+```
+
+This jobs endpoint uses cursor pagination rather than build-list pagination: the
+body is `{items, links}` and the collector follows `links.next`
+([Jobs API](https://buildkite.com/docs/apis/rest-api/jobs#list-jobs)). Specifying
+`include_retried_jobs=true` protects the analysis from a future default change
+and makes the intended attempt accounting explicit.
+
+Treat every job `id` as a real attempt. Preserve `step.id`, `step_key`,
+`group_key`, `name`, `command`, `matrix`, `parallel_group_index`, and
+`parallel_group_total` to identify the logical step. Link attempts through
+`retried`, `retried_in_job_id`, `retries_count`, `retry_source`, and
+`retry_type`; accept null or unknown retry values and retain the raw payload.
+Once all attempts are present, do **not** multiply by `retries_count`, which
+would double-count time and failures. Repository code also records that the
+Buildkite step ID survives retries
+([coverage helper](../../../.buildkite/common/scripts/run_cov_split.sh#L47)).
+
+For result and timing analysis retain `state`, `soft_failed`, `exit_status`,
+`signal`, `signal_reason`, `broken_reason`, `scheduled_at`, `runnable_at`,
+`concurrency_wait_time_ms`, `started_at`, and `finished_at`
+([job data model](https://buildkite.com/docs/apis/rest-api/builds#job-data-model)).
+Compute attempt execution time as `finished_at - started_at`; return null when
+either endpoint is absent. Queue or concurrency wait is useful operational data
+but is not GPU execution time.
+
+### Selecting Qwen3-Omni work
+
+Prefer stable `step_key` values where available. At the baseline commit the four
+performance keys are:
+
+- `nightly-omni-performance-no-async-chunk`
+- `nightly-omni-performance-async-chunk`
+- `nightly-omni-performance-vllm-text`
+- `nightly-omni-performance-multi-replicas`
+
+The shared H100 function job, accuracy job, and multi-replica startup job do not
+have step keys in the current YAML. Match those jobs using `name` plus `command`,
+then confirm Qwen3-Omni participation from pytest node IDs in the log. Never
+charge every case in the shared `tests/e2e` job to Qwen3-Omni. Also scan shared
+Omni example/function logs for Qwen3-Omni node IDs so that a generic label does
+not hide relevant coverage. The current commands, artifact paths, and H100
+presets are visible in
+[the CUDA nightly group](../../../.buildkite/cuda/test-nightly.yml#L8).
+
+Historical jobs ran the configuration at each build's `commit`, not necessarily
+the fixed baseline. Record each commit and, for any changed label, command, or
+hardware preset, resolve the corresponding YAML from that commit before
+calculating cost.
+
+### Logs
+
+For each selected attempt use either route:
+
+```text
+GET /v2/organizations/{org}/jobs/{job_id}/log
+GET /v2/organizations/{org}/jobs/{job_id}/log.txt
+```
+
+The first returns JSON with `content`, `size`, and `header_times`; `.txt` (or
+`Accept: text/plain`) returns raw text. A `HEAD` request returns the stored byte
+size, and `Range: bytes=-N` with `Accept: text/plain` can fetch only a tail
+([job log API](https://buildkite.com/docs/apis/rest-api/jobs#get-a-jobs-log-output)).
+Tail reads are useful for triage, but full logs may be needed because pytest
+collection/node IDs need not occur near the end.
+
+Normalize ANSI/control sequences and volatile IDs before clustering failure
+signatures, but retain an immutable hash and the job URL for traceability. Do
+not publish raw logs in the final report because tests and infrastructure may
+print sensitive values.
+
+### Artifacts
+
+For unambiguous retry attribution, list artifacts per attempt:
+
+```text
+GET /v2/organizations/{org}/jobs/{job_id}/artifacts
+```
+
+The build-scoped equivalent is also available. Artifact records expose `id`,
+`job_id`, `state`, `path`, `filename`, `mime_type`, `file_size`, `sha1sum`, and
+`download_url`; `state=finished` and path glob filters are supported
+([Artifacts API](https://buildkite.com/docs/apis/rest-api/artifacts)). Download
+only Qwen3-Omni result JSON or other explicitly useful test output. The download
+endpoint responds with HTTP 302 and a URL that should normally be treated as
+valid for only 60 seconds, so follow it immediately and never cache or report it.
+Verify `sha1sum` after download.
+
+Buildkite's artifact guide says its agent commands default to the latest retry
+attempt unless `--include-retried-jobs` is used. The REST artifact page does not
+state equivalent build-list semantics, so a rigorous collector should list by
+each attempt's job ID rather than assume a build-level list contains all retry
+artifacts
+([retried artifacts](https://buildkite.com/docs/pipelines/configure/artifacts#artifacts-are-missing-from-retried-jobs)).
+
+There is also a documentation inconsistency: the Builds API job table names the
+link `artifact_url`, while the newer Jobs API example returns `artifacts_url`.
+Do not depend on either property; construct the documented job-scoped endpoint
+from the organization and job UUID.
+
+## Cost and quality metrics supported by the API
+
+For each attempt, calculate:
+
+```text
+wall_seconds = finished_at - started_at
+gpu_hours = wall_seconds * gpu_count / 3600
+```
+
+Sum attempt costs, including failed and retried attempts. For a shared job, keep
+GPU-hours at job level unless logs/artifacts provide trustworthy case intervals;
+do not divide wall time evenly among node IDs. Derive a flake only when an
+earlier attempt failed and a later attempt for the same logical step passed.
+Keep hard failure, soft failure, timeout, cancellation, infrastructure breakage,
+and incomplete execution separate.
+
+GPU count is not a documented Build/Job field. At the baseline commit it comes
+from the nightly step's `mirror_hardwares` preset and the uploader's Kubernetes
+resource limit. For example, `h100_1` requests one GPU and `h100_2` requests two
+([hardware presets](../../../.buildkite/common/ci_mirror_hardwares.yml#L58));
+the Qwen3-Omni nightly steps select `h100_2`, `h100_3`, or `h100_4` as shown in
+the nightly YAML. Resolve this per historical commit and cross-check the queue
+in `agent_query_rules`. If the configuration is unavailable or disagrees with
+runtime evidence, report GPU count and GPU-hours as unknown.
+
+Likewise, Buildkite's timestamps support job wall time but not case time or model
+startup count. Derive those only from explicit pytest timing output, structured
+artifacts, or well-defined log events, and attach the source. Otherwise report
+them as unavailable.
+
+## Rate limits, pagination, and failure handling
+
+Buildkite applies two concurrent REST limits: an organization limit (default
+200 requests/minute, plan-dependent) and a per-user limit (default 50
+requests/minute). Every response supplies organization `RateLimit-*` and user
+`RateLimit-User-*` headers. If either limit is exhausted the API returns 429;
+wait for the greater applicable reset interval before a bounded retry
+([REST API rate limits](https://buildkite.com/docs/apis/rest-api/rate-limits)).
+
+A 20-build collection can exceed the per-user limit even before logs and
+artifacts are downloaded. The collector should therefore:
+
+1. Use the metadata-only build pass and maximum page size.
+2. Limit job queries to `nightly-omni-test-group` and use cursor pagination.
+3. Download full logs/artifacts only for identified Qwen3-Omni attempts.
+4. Cache responses by immutable build/job/artifact ID, with credentials and
+   signed URLs removed.
+5. Use small bounded concurrency and inspect both remaining/reset header sets
+   after every response.
+6. Retry 429 and transient 5xx responses with bounded backoff; preserve other
+   4xx responses as collection errors instead of silently omitting records.
+
+The optional organization rate-limit endpoint requires the additional
+`read_accounts` scope, so it is unnecessary when ordinary response headers are
+already monitored
+([organization rate limits](https://buildkite.com/docs/apis/rest-api/organizations/rate-limits)).
+
+## Required provenance in downstream output
+
+Every derived row should retain at least `build.number`, `build.id`,
+`build.commit`, `build.source`, `job.id`, logical step identity, attempt index,
+and the source used for GPU count or case timing. The downstream report must
+state:
+
+- how many candidate pages were scanned and why any build was unresolved;
+- how many of the 20 builds produced valid executions for each case/job;
+- whether durations are attempt-level job wall time or genuine case time;
+- whether GPU counts came from the baseline or the historical commit; and
+- any missing/expired logs or artifacts.
+
+These constraints prevent a current static YAML snapshot from being presented
+as historical execution truth and prevent unavailable case-level timing from
+being fabricated.
