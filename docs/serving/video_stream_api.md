@@ -64,6 +64,12 @@ WebSocket /v1/video/chat/stream
 | `enable_frame_filter` | bool | `true` | Enable EVS near-duplicate frame filtering. |
 | `frame_filter_threshold` | float, 0.0-1.0 | `0.95` | EVS similarity threshold. Higher keeps more frames; lower drops more near-duplicates. |
 
+Sampling parameter bugfix: `sampling_params_list` is now forwarded to the engine;
+earlier versions accepted this field but silently used deployment defaults instead.
+Each entry configures one stage in pipeline order. Omitted trailing stages use their
+deployment defaults. An omitted, `null`, or empty list keeps the engine defaults.
+Invalid sampling parameters return an `error` when the query is submitted.
+
 ### Legacy Aliases
 
 The server accepts these legacy field names and rewrites them before validation. New clients should send the canonical names above.
