@@ -314,7 +314,6 @@ class OmniStreamingVideoHandler:
                         await self._engine_client.abort(prev_request_id)
                     except Exception:
                         pass
-                    await asyncio.sleep(0.1)
                 prev_was_interrupted = False
 
                 request_id = f"video-{uuid.uuid4().hex[:12]}"

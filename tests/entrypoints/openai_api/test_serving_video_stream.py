@@ -516,6 +516,88 @@ async def test_new_query_cancels_in_flight_query():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("delay_abort", [False, True], ids=["immediate-ack", "delayed-ack"])
+async def test_interrupted_queries_wait_for_abort_without_fixed_delay(monkeypatch, delay_abort):
+    started: asyncio.Queue[str] = asyncio.Queue()
+    abort_started: asyncio.Queue[str] = asyncio.Queue()
+    allow_abort = asyncio.Event()
+    if not delay_abort:
+        allow_abort.set()
+    request_ids: list[str] = []
+    closed: list[str] = []
+    aborted: list[str] = []
+    delays: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def record_sleep(delay, result=None):
+        # Observe requested delays without a machine-dependent latency limit.
+        delays.append(delay)
+        return await original_sleep(0, result)
+
+    monkeypatch.setattr(video_stream_base.asyncio, "sleep", record_sleep)
+
+    class BlockingEngine:
+        async def generate(self, *, request_id, **kwargs):
+            if request_ids:
+                assert aborted[-1] == request_ids[-1]
+            request_ids.append(request_id)
+            started.put_nowait(request_id)
+            try:
+                if len(request_ids) <= 3:
+                    yield _text_result("partial")
+                    await asyncio.Event().wait()
+                else:
+                    yield _text_result("final")
+            finally:
+                closed.append(request_id)
+
+        async def abort(self, request_id):
+            assert request_id in closed
+            abort_started.put_nowait(request_id)
+            await allow_abort.wait()
+            aborted.append(request_id)
+
+    class PreprocessedHandler(QwenOmniStreamingVideoHandler):
+        async def _preprocess_to_engine_prompt(self, request):
+            return {"prompt_token_ids": [1]}
+
+    ws = TimedWebSocket()
+    handler = PreprocessedHandler(chat_service=object(), engine_client=BlockingEngine(), idle_timeout=5.0)
+    task = asyncio.create_task(handler.handle_session(ws))
+    try:
+        ws.put({"type": "session.config", "modalities": ["text"], "enable_frame_filter": False})
+        ws.put({"type": "video.frame", "data": _b64(_make_jpeg())})
+        ws.put({"type": "video.query", "text": "first"})
+        previous_id = await asyncio.wait_for(started.get(), timeout=2.0)
+
+        for _ in range(3):
+            ws.put({"type": "video.query", "text": "interrupt"})
+            assert await asyncio.wait_for(abort_started.get(), timeout=2.0) == previous_id
+            if delay_abort:
+                assert previous_id not in aborted
+                assert started.empty()
+                allow_abort.set()
+            previous_id = await asyncio.wait_for(started.get(), timeout=2.0)
+            if delay_abort:
+                allow_abort.clear()
+
+        ws.put({"type": "video.done"})
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert aborted == request_ids[:-1]
+        assert len(set(request_ids)) == 4
+        assert [msg["text"] for msg in ws.sent if msg["type"] == "response.text.done"] == ["final"]
+        assert "error" not in ws.sent_types()
+        assert "session.done" in ws.sent_types()
+        assert not [delay for delay in delays if delay > 0], "Restart must not add a timed grace period after abort"
+    finally:
+        allow_abort.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_video_done_waits_for_in_flight_query():
     query_started = asyncio.Event()
     allow_finish = asyncio.Event()
