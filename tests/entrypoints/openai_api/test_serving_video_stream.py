@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Tests for the serving-layer streaming video WebSocket handler."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import io
 import json
 import threading
+import weakref
 from typing import Any
 
 import pytest
@@ -38,10 +40,10 @@ def _b64(data: bytes) -> str:
 
 def _text_result(text: str) -> OmniRequestOutput:
     class Output:
-        pass
+        text: str
 
     class RequestOutput:
-        pass
+        outputs: list[Output]
 
     output = Output()
     output.text = text
@@ -52,10 +54,10 @@ def _text_result(text: str) -> OmniRequestOutput:
 
 def _audio_result(audio_data: Any) -> OmniRequestOutput:
     class Output:
-        pass
+        multimodal_output: dict[str, Any]
 
     class RequestOutput:
-        pass
+        outputs: list[Output]
 
     output = Output()
     output.multimodal_output = {"audio": audio_data}
@@ -586,6 +588,68 @@ async def test_frame_prewarm_does_not_block_following_query(monkeypatch):
     ws.put({"type": "video.done"})
     await asyncio.wait_for(task, timeout=2.0)
     assert "session.done" in ws.sent_types()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_frames", [1, 2], ids=["evicted", "retained"])
+async def test_frame_prewarm_only_keeps_retained_images(monkeypatch, max_frames):
+    frame_a = _make_jpeg(255, 0, 0)
+    frame_b = _make_jpeg(0, 255, 0)
+    decode_started = asyncio.Event()
+    release_decode = asyncio.Event()
+    frame_b_accepted = asyncio.Event()
+    decoded_images: dict[bytes, weakref.ReferenceType[Image.Image]] = {}
+    prewarm_task: asyncio.Task | None = None
+    original_to_thread = asyncio.to_thread
+
+    async def controlled_to_thread(function, *args, **kwargs):
+        nonlocal prewarm_task
+        if function is video_stream_base._decode_frame_bytes:
+            if args[0] == frame_a:
+                prewarm_task = asyncio.current_task()
+                decode_started.set()
+                await release_decode.wait()
+            image = await original_to_thread(function, *args, **kwargs)
+            decoded_images[args[0]] = weakref.ref(image)
+            return image
+        return await original_to_thread(function, *args, **kwargs)
+
+    class AckWebSocket(TimedWebSocket):
+        async def send_json(self, data):
+            await super().send_json(data)
+            if data.get("type") == "video.frame.ack" and data.get("frame_id") == "B":
+                frame_b_accepted.set()
+
+    monkeypatch.setattr(video_stream_base.asyncio, "to_thread", controlled_to_thread)
+    ws = AckWebSocket()
+    handler = QwenOmniStreamingVideoHandler(chat_service=object(), idle_timeout=5.0)
+    session_task = asyncio.create_task(handler.handle_session(ws))
+    ws.put({"type": "session.config", "max_frames": max_frames, "enable_frame_filter": False})
+    try:
+        ws.put({"type": "video.frame", "frame_id": "A", "data": _b64(frame_a)})
+        await asyncio.wait_for(decode_started.wait(), timeout=5.0)
+        ws.put({"type": "video.frame", "frame_id": "B", "data": _b64(frame_b)})
+        await asyncio.wait_for(frame_b_accepted.wait(), timeout=5.0)
+        ack = next(message for message in ws.sent if message.get("frame_id") == "B")
+        assert ack["accepted"] is True
+        assert ack.get("dropped_frame_id") == ("A" if max_frames == 1 else None)
+
+        # Finish A's real decode only after B has either evicted A or joined it.
+        release_decode.set()
+        assert prewarm_task is not None
+        await asyncio.wait_for(asyncio.shield(prewarm_task), timeout=5.0)
+        gc.collect()
+        assert not session_task.done()
+        # A finished task must not keep an evicted PIL image alive for the session.
+        assert (decoded_images[frame_a]() is not None) == (max_frames == 2)
+    finally:
+        release_decode.set()
+        ws.put({"type": "video.done"})
+        await asyncio.wait_for(session_task, timeout=5.0)
+
+    gc.collect()
+    assert decoded_images[frame_a]() is None
+    assert not any(message.get("type") == "error" for message in ws.sent)
 
 
 @pytest.mark.asyncio
