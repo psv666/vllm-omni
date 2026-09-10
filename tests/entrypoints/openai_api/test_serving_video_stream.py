@@ -151,7 +151,7 @@ def run_sampling_session(monkeypatch):
             for index, name in enumerate(("thinker", "talker", "code2wav"))
         ]
         engine.default_sampling_params_list = [
-            SamplingParams(temperature=0.4, max_tokens=64),
+            SamplingParams(temperature=0.4, max_tokens=64, top_p=0.85),
             SamplingParams(temperature=0.7, max_tokens=96),
             SamplingParams(temperature=0.8, max_tokens=128),
         ]
@@ -224,6 +224,26 @@ async def test_video_sampling_params_reach_engine(
     assert params[0].seed == 42
     assert all(param.output_kind == RequestOutputKind.CUMULATIVE for param in engine.default_sampling_params_list)
     assert next(msg for msg in ws.sent if msg["type"] == "response.text.done")["text"] == "answer"
+
+
+@pytest.mark.asyncio
+async def test_video_sampling_params_provided_stage_uses_constructor_defaults(run_sampling_session):
+    ws, engine = await run_sampling_session({"sampling_params_list": [{"temperature": 0.2}]})
+
+    assert not [msg for msg in ws.sent if msg["type"] == "error"]
+    engine.generate.assert_called_once()
+    params = engine.generate.call_args.kwargs["sampling_params_list"]
+    constructor_defaults = SamplingParams()
+    assert params[0].temperature == 0.2
+    for field in ("max_tokens", "top_p"):
+        assert getattr(params[0], field) == getattr(constructor_defaults, field)
+        assert getattr(params[0], field) != getattr(engine.default_sampling_params_list[0], field)
+    assert len(params) == 3
+    for param, default in zip(params[1:], engine.default_sampling_params_list[1:]):
+        assert param.temperature == default.temperature
+        assert param.max_tokens == default.max_tokens
+        assert param.top_p == default.top_p
+        assert param is not default
 
 
 @pytest.mark.asyncio
