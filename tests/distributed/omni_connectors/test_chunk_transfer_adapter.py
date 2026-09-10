@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 import threading
-from collections import defaultdict, deque
+from collections import deque
 from types import MethodType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -2403,7 +2403,8 @@ def _parked_sender_scheduler(adapter, session):
     return scheduler
 
 
-def test_parked_streaming_final_update_emits_downstream_terminal(build_adapter):
+@pytest.mark.parametrize("send_first_chunk", [False, True])
+def test_parked_streaming_final_update_emits_downstream_terminal(build_adapter, send_first_chunk):
     """#6670: a final update on a parked sender must terminate the receiver.
 
     Upstream turns "final update while parked in WAITING_FOR_STREAMING_REQ"
@@ -2419,11 +2420,14 @@ def test_parked_streaming_final_update_emits_downstream_terminal(build_adapter):
     )
     session.resumable = True
     session._omni_segment_generation = 0
-    # A segment stop already ran: it sent chunk 0 and armed the next
-    # segment's dedup watermark.
-    adapter.put_req_chunk["ext-parked-final"] = 1
-    adapter._segment_generation = defaultdict(int)
-    adapter._segment_generation["ext-parked-final"] = 1
+    # A segment stop queues its boundary before the final update arrives.
+    # The downstream request is already prewarmed even if the sender has not
+    # dequeued this first task, so it still needs a terminal in both cases.
+    adapter.save_async(None, session, is_segment_finished=True)
+    assert session.external_req_id not in adapter.put_req_chunk
+    if send_first_chunk:
+        adapter._send_single_request(adapter._pending_save_reqs.popleft())
+        connector.put.reset_mock()
 
     scheduler = _parked_sender_scheduler(adapter, session)
 
@@ -2434,11 +2438,13 @@ def test_parked_streaming_final_update_emits_downstream_terminal(build_adapter):
     # Local teardown happened...
     assert session.request_id not in scheduler.requests
     # ...but only after a terminal chunk was queued for the next stage.
-    assert len(adapter._pending_save_reqs) == 1
-
-    adapter._send_single_request(adapter._pending_save_reqs.popleft())
+    assert session.status == RequestStatus.FINISHED_STOPPED
+    assert any(task["is_finished"] for task in adapter._pending_save_reqs)
+    while adapter._pending_save_reqs:
+        adapter._send_single_request(adapter._pending_save_reqs.popleft())
 
     connector.put.assert_called_once()
+    assert connector.put.call_args.kwargs["put_key"] == f"ext-parked-final_1_{int(send_first_chunk)}"
     payload = connector.put.call_args.kwargs["data"]
     assert bool(payload.meta.finished.item()) is True
     assert bool(payload.meta.is_segment_finished.item()) is False
@@ -2584,6 +2590,88 @@ def test_terminal_chunk_survives_cleanup_racing_an_inflight_sibling(build_adapte
 
     _assert_terminal_put(connector)
     assert "ext-sibling" not in adapter._sender_tokens
+
+
+@pytest.mark.parametrize("finish_inside_put", [False, True])
+def test_successful_put_keeps_terminal_chunk_sequence(build_adapter, finish_inside_put):
+    """A cleanup during put must not reuse a key already consumed downstream."""
+    adapter, connector = build_adapter(stage_id=1, model_mode="ar")
+    receiver, receiver_connector = build_adapter(stage_id=2, model_mode="generation")
+    session = _req("req-sequence", RequestStatus.WAITING_FOR_STREAMING_REQ, external_req_id="ext-sequence")
+    session.resumable = True
+    session._omni_segment_generation = 0
+    scheduler = _parked_sender_scheduler(adapter, session)
+    final_update = _req(session.request_id, RequestStatus.WAITING)
+    final_update.resumable = False
+    downstream = _req("req-downstream", RequestStatus.WAITING, external_req_id=session.external_req_id)
+    receiver.request_ids_mapping[downstream.request_id] = session.external_req_id
+    payloads = {}
+
+    def receive_next():
+        entry = _dequeue_load_entry(receiver, downstream)
+        return receiver._poll_single_request(entry)
+
+    def put_then_finish(**kwargs):
+        payload = kwargs["data"]
+        payloads[kwargs["put_key"]] = {
+            "meta": {
+                "finished": bool(payload.meta.finished.item()),
+                "is_segment_finished": bool(payload.meta.is_segment_finished.item()),
+            }
+        }
+        if not payload.meta.finished.item():
+            # Consume the ordinary boundary while put is still in flight.
+            assert receive_next()
+            if finish_inside_put:
+                scheduler.add_request(final_update)
+        return True, 1, {}
+
+    def get_by_key(_from_stage, _to_stage, key):
+        payload = payloads.pop(key, None)
+        return (payload, 1) if payload is not None else None
+
+    connector.put.side_effect = put_then_finish
+    receiver_connector.get.side_effect = get_by_key
+    adapter.save_async(None, session, is_segment_finished=True)
+    adapter._send_single_request(adapter._pending_save_reqs.popleft())
+    if not finish_inside_put:
+        scheduler.add_request(final_update)
+    while adapter._pending_save_reqs:
+        adapter._send_single_request(adapter._pending_save_reqs.popleft())
+
+    assert [call.kwargs["put_key"] for call in connector.put.call_args_list] == ["ext-sequence_1_0", "ext-sequence_1_1"]
+    assert receive_next()
+    assert downstream.request_id in receiver.upstream_exhausted_requests
+    assert not payloads
+    assert session.external_req_id not in adapter._sender_tokens
+
+
+def test_late_successful_put_cannot_advance_replacement_generation(build_adapter):
+    """The post-put guard must retain identity checks while relaxing cancellation."""
+    adapter, connector = build_adapter(stage_id=1, model_mode="ar")
+    request = _req("req-old", RequestStatus.RUNNING, external_req_id="ext-replaced")
+    request.resumable = True
+    adapter.save_async(None, request, is_segment_finished=True)
+    task = adapter._pending_save_reqs.popleft()
+    old_token = task["sender_token"]
+    replacement_token = type(old_token)()
+
+    def replace_during_put(**kwargs):
+        # Model a completion that no longer owns its external id. The old
+        # terminal fence must never authorize writes to the successor's state.
+        with adapter._sender_state_lock:
+            old_token.cancelled = True
+            old_token.terminal_pending = True
+            adapter._sender_tokens[request.external_req_id] = replacement_token
+            adapter.put_req_chunk[request.external_req_id] = 4
+            adapter.ramp_chunk_count[request.external_req_id] = 2
+        return True, 1, {}
+
+    connector.put.side_effect = replace_during_put
+    adapter._send_single_request(task)
+    assert adapter._sender_tokens[request.external_req_id] is replacement_token
+    assert adapter.put_req_chunk[request.external_req_id] == 4
+    assert adapter.ramp_chunk_count[request.external_req_id] == 2
 
 
 def test_new_request_cannot_join_a_generation_with_a_queued_terminal(build_adapter):

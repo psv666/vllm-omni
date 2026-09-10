@@ -315,6 +315,17 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self._processor_accepts_step_tokens[processor] = accepts
         return accepts
 
+    def has_active_sender(self, external_req_id: str) -> bool:
+        """Whether this request owns a sender, including work still queued.
+
+        ``save_async`` registers the generation before the background thread
+        can send its first chunk. Chunk counters are initialized later and
+        cannot determine whether a prewarmed receiver needs a terminal.
+        """
+        with self._sender_state_lock:
+            sender_token = self._sender_tokens.get(external_req_id)
+            return sender_token is not None and not sender_token.cancelled
+
     def save_async(
         self,
         multimodal_output: dict[str, Any] | None = None,
@@ -761,18 +772,25 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             data=payload_data,
         )
 
-        if sender_token is not None and not self._sender_generation_is_active(
-            external_req_id, sender_token, is_terminal=is_finished
-        ):
-            # cleanup_sender() may cancel this generation while put() is
-            # blocked. Do not let that stale completion recreate state for a
-            # request whose cleanup is already in progress.
-            logger.debug("Ignoring completed put for cancelled request %s", external_req_id)
-            return
+        with self._sender_state_lock:
+            if sender_token is not None:
+                still_current = self._sender_tokens.get(external_req_id) is sender_token
+                retiring_without_terminal = sender_token.cancelled and not (
+                    is_finished or sender_token.terminal_pending
+                )
+                if not still_current or retiring_without_terminal:
+                    logger.debug("Ignoring completed put for retired request %s", external_req_id)
+                    return
+            if success:
+                # A receiver may already have consumed this key while put was
+                # in flight. Even if cleanup retired this generation, its
+                # pending terminal must use the next key. Check ownership and
+                # advance counters under the same lock so a stale completion
+                # cannot modify a successor's state.
+                self.put_req_chunk[external_req_id] += 1
+                self.ramp_chunk_count[external_req_id] += 1
 
         if success:
-            self.put_req_chunk[external_req_id] += 1
-            self.ramp_chunk_count[external_req_id] += 1
             logger.debug(f"[Stage-{stage_id}] Sent {connector_put_key}")
             # Sender uses struct attr access here; the receive path in
             # `_load_one_request` / `_update_request_payload` reads dict keys.

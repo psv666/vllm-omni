@@ -701,16 +701,16 @@ class OmniSchedulerMixin:
     def _adapter_owing_terminal(self, request: Request) -> OmniChunkTransferAdapter | None:
         """The adapter that owes *request*'s downstream stage a terminal chunk.
 
-        ``put_req_chunk`` gains an entry the first time this stage puts a
-        chunk for an external id and loses it on sender cleanup, so membership
-        is exactly "a downstream receiver is following this stream and has not
-        been told it ended". Final stages never put, so they never match.
+        Sender ownership starts when the first chunk is queued, before the
+        background thread initializes its chunk counter. A prewarmed receiver
+        needs a terminal even if that first chunk has not been sent yet.
+        Final stages never queue sends, so they never match.
         """
         adapter = getattr(self, "chunk_transfer_adapter", None)
         if adapter is None:
             return None
         external_req_id = getattr(request, "external_req_id", None) or request.request_id
-        return adapter if external_req_id in adapter.put_req_chunk else None
+        return adapter if adapter.has_active_sender(external_req_id) else None
 
     def _finish_parked_streaming_session(self, request: Request, adapter: OmniChunkTransferAdapter) -> None:
         """End a parked async-chunk session with a downstream terminal chunk."""
