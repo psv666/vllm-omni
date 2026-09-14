@@ -161,6 +161,43 @@ def _tts_output(request_id: str, *, samples: int = 24000, text: str = "hello") -
 # --------------------------------------------------------------------------- #
 
 
+def test_a_duplex_model_also_serves_the_turn_based_surface() -> None:
+    """A duplex deployment keeps ``/v1/chat/completions`` (RFC #7181 D9).
+
+    It gets it by *being* a turn-based stack rather than by adapting one: each
+    duplex class extends its turn-based counterpart. Pinned here because the
+    relationship is a base-class declaration, easy to "tidy" back into a
+    sibling and silently drop the HTTP surface.
+    """
+    from vllm_omni.engine.async_omni_engine import AsyncOmniEngine
+    from vllm_omni.engine.duplex_omni_engine import DuplexOmniEngine
+    from vllm_omni.entrypoints.async_omni import AsyncOmni
+    from vllm_omni.entrypoints.duplex_omni import DuplexOmni
+
+    assert issubclass(DuplexOrchestrator, Orchestrator)
+    assert issubclass(DuplexOmniEngine, AsyncOmniEngine)
+    assert issubclass(DuplexOmni, AsyncOmni)
+
+    # What openai_serving_chat requires of its engine client.
+    assert any(cls.__name__ == "EngineClient" for cls in DuplexOmni.__mro__)
+    assert hasattr(DuplexOmni, "generate")
+    # ...without giving up the duplex surface.
+    assert hasattr(DuplexOmni, "open_session")
+
+
+def test_the_turn_based_stack_does_not_depend_on_the_duplex_one() -> None:
+    """The dependency runs duplex -> turn-based, never the reverse.
+
+    This is what keeps the refactor's benefit intact: ``Orchestrator`` and
+    ``AsyncOmni`` carry no duplex code, they simply have duplex subclasses.
+    """
+    from vllm_omni.engine.async_omni_engine import AsyncOmniEngine
+    from vllm_omni.entrypoints.async_omni import AsyncOmni
+
+    for turn_based in (Orchestrator, AsyncOmniEngine, AsyncOmni):
+        assert not any("duplex" in cls.__name__.lower() for cls in turn_based.__mro__)
+
+
 def test_turn_based_orchestrator_has_no_session_manager() -> None:
     orchestrator = Orchestrator(
         request_async_queue=asyncio.Queue(),

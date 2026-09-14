@@ -34,7 +34,7 @@ from vllm_omni.engine.duplex.session.engine_session import DuplexFenceMismatchEr
 from vllm_omni.engine.duplex.session.manager import DuplexSessionManager
 from vllm_omni.engine.messages import EngineQueueMessage, OutputMessage
 from vllm_omni.engine.orchestrator import (
-    OrchestratorBase,
+    Orchestrator,
     OrchestratorRequestState,
     build_engine_core_request_from_tokens,
 )
@@ -58,7 +58,7 @@ class DuplexOrchestratorRequestState(OrchestratorRequestState):
     config_generation: int = -1
 
 
-class DuplexOrchestrator(OrchestratorBase, DuplexStagePort):
+class DuplexOrchestrator(Orchestrator, DuplexStagePort):
     """Stage management for a duplex deployment; owns one ``DuplexSessionManager``."""
 
     def __init__(
@@ -90,7 +90,10 @@ class DuplexOrchestrator(OrchestratorBase, DuplexStagePort):
         if self.session_manager.accepts(msg):
             self.session_manager.dispatch(msg)
             return True
-        return False
+        # Not a session message: fall through to the turn-based handler. A
+        # duplex model still serves /v1/chat/completions when its pipeline
+        # supports ``generate`` (RFC #7181 D9), and those requests arrive here.
+        return await super()._dispatch_message(msg)
 
     # Any: ``Coroutine``'s send/yield parameters, as in the ``OrchestratorBase`` seam.
     def _background_tasks(self) -> list[Coroutine[Any, Any, None]]:

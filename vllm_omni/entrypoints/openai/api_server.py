@@ -532,14 +532,84 @@ async def build_async_omni_from_stage_config(
             async_omni.shutdown()
 
 
-def _init_duplex_app_state(
+async def _build_duplex_chat_serving(
+    engine_client: DuplexOmni,
+    state: State,
+    args: Namespace,
+    request_logger: RequestLogger | None,
+    supported_tasks: set[str],
+) -> "OmniOpenAIServingChat | None":
+    """``/v1/chat/completions`` for a duplex server, or ``None`` when unsupported.
+
+    The same serving object every turn-based model gets. A duplex server does
+    not run the full turn-based init (it would pay a speech-pipeline warmup it
+    never uses), so the two prerequisites chat needs are built here.
+    """
+    if "generate" not in supported_tasks:
+        return None
+
+    resolved_chat_template = load_chat_template(args.chat_template)
+    if resolved_chat_template is None:
+        try:
+            tokenizer = await engine_client.get_tokenizer()
+        except Exception as exc:
+            logger.debug("Could not inspect tokenizer chat_template before duplex serving init: %s", exc)
+            tokenizer = None
+        if tokenizer is None or getattr(tokenizer, "chat_template", None) is None:
+            resolved_chat_template = _load_model_chat_template_json(args.model)
+
+    state.online_renderer = OnlineRenderer(
+        model_config=engine_client.model_config,
+        renderer=engine_client.renderer,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        trust_request_chat_template=args.trust_request_chat_template,
+        enable_auto_tools=args.enable_auto_tool_choice,
+        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
+        tool_parser=args.tool_call_parser,
+        reasoning_parser=args.structured_outputs_config.reasoning_parser,
+        default_chat_template_kwargs=args.default_chat_template_kwargs,
+        log_error_stack=args.log_error_stack,
+    )
+    return OmniOpenAIServingChat(
+        engine_client=engine_client,
+        models=state.openai_serving_models,
+        response_role=args.response_role,
+        online_renderer=state.online_renderer,
+        request_logger=request_logger,
+        chat_template=resolved_chat_template,
+        chat_template_content_format=args.chat_template_content_format,
+        default_chat_template_kwargs=args.default_chat_template_kwargs,
+        trust_request_chat_template=args.trust_request_chat_template,
+        return_tokens_as_token_ids=args.return_tokens_as_token_ids,
+        enable_auto_tools=args.enable_auto_tool_choice,
+        exclude_tools_when_tool_choice_none=args.exclude_tools_when_tool_choice_none,
+        tool_parser=args.tool_call_parser,
+        reasoning_parser=args.structured_outputs_config.reasoning_parser,
+        enable_prompt_tokens_details=args.enable_prompt_tokens_details,
+        enable_force_include_usage=args.enable_force_include_usage,
+        enable_log_outputs=args.enable_log_outputs,
+        enable_log_deltas=args.enable_log_deltas,
+    )
+
+
+async def _init_duplex_app_state(
     engine_client: DuplexOmni,
     state: State,
     args: Namespace,
     base_model_paths: list[BaseModelPath],
     vllm_config: Any,
+    request_logger: RequestLogger | None,
 ) -> None:
-    """Minimal app state for a duplex-only server."""
+    """App state for a duplex server: sessions, and chat when the model generates.
+
+    A duplex model is still a turn-based model underneath -- ``DuplexOmni``
+    extends ``AsyncOmni`` -- so ``/v1/chat/completions`` is served whenever the
+    pipeline reports the ``generate`` task, exactly as for any other model. The
+    remaining turn-based routes stay off; a pipeline turns chat off too through
+    the usual ``endpoint_restrictions``.
+    """
     state.vllm_config = vllm_config
     state.diffusion_engine = None
     state.openai_serving_models = OpenAIServingModels(
@@ -551,7 +621,6 @@ def _init_duplex_app_state(
     state.serving_tokens = None
     state.online_renderer = None
     for attribute in (
-        "openai_serving_chat",
         "openai_serving_chat_batch",
         "openai_serving_completion",
         "openai_serving_responses",
@@ -572,10 +641,27 @@ def _init_duplex_app_state(
         "anthropic_serving_messages",
     ):
         setattr(state, attribute, None)
+    supported_tasks: set[str] = {"generate"}
+    if hasattr(engine_client, "get_supported_tasks"):
+        supported_tasks = set(await engine_client.get_supported_tasks())
+    state.openai_serving_chat = await _build_duplex_chat_serving(
+        engine_client, state, args, request_logger, supported_tasks
+    )
+
     state.openai_serving_duplex = OmniDuplexSessionHandler(duplex_omni=engine_client)
     state.enable_server_load_tracking = getattr(args, "enable_server_load_tracking", False)
     state.server_load_metrics = 0
-    logger.info("Duplex mode: serving %s over /v1/realtime?duplex=1 only", engine_client.model)
+    if state.openai_serving_chat is not None:
+        logger.info(
+            "Duplex mode: serving %s over /v1/realtime?duplex=1 and /v1/chat/completions",
+            engine_client.model,
+        )
+    else:
+        logger.info(
+            "Duplex mode: serving %s over /v1/realtime?duplex=1 only "
+            "(/v1/chat/completions unavailable: pipeline does not support the 'generate' task)",
+            engine_client.model,
+        )
 
 
 async def omni_init_app_state(
@@ -632,7 +718,7 @@ async def omni_init_app_state(
     # run over /v1/realtime?duplex=1; every turn-based HTTP route reports
     # "not available".
     if isinstance(engine_client, DuplexOmni):
-        _init_duplex_app_state(engine_client, state, args, base_model_paths, vllm_config)
+        await _init_duplex_app_state(engine_client, state, args, base_model_paths, vllm_config, request_logger)
         return
 
     # Pure Diffusion mode: use simplified initialization logic

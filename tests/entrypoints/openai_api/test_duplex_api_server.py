@@ -97,13 +97,18 @@ _DUPLEX_MUST_BE_WIRED = {
     "openai_serving_models",
     "openai_serving_duplex",
 }
+#: A duplex model is a turn-based model underneath, so it keeps
+#: ``/v1/chat/completions`` when its pipeline generates (RFC #7181 D9). Chat and
+#: the renderer it needs are the only turn-based services that may be wired.
+_CHAT_WHEN_GENERATING = {"openai_serving_chat", "online_renderer"}
 
 
 class _FakeDuplexOmni(DuplexOmni):
     """A ``DuplexOmni`` without an engine: only what the app-state wiring reads."""
 
-    def __init__(self) -> None:
+    def __init__(self, supported_tasks: tuple[str, ...] = ("generate",)) -> None:
         self.model = "demo-duplex-model"
+        self._supported_tasks = supported_tasks
         self._stage_configs = [object(), object(), object()]
         self._vllm_config = SimpleNamespace(
             lora_config=None,
@@ -111,6 +116,21 @@ class _FakeDuplexOmni(DuplexOmni):
             parallel_config=SimpleNamespace(_api_process_rank=0),
         )
         self._duplex_session_config = DuplexSessionRuntimeConfig()
+
+    async def get_supported_tasks(self) -> tuple[str, ...]:
+        return self._supported_tasks
+
+    async def get_tokenizer(self):
+        return None
+
+    @property
+    def renderer(self):
+        """Read when building the chat serving a generating duplex model keeps."""
+        return object()
+
+    @property
+    def model_config(self):
+        return SimpleNamespace()
 
     async def get_vllm_config(self):
         return self._vllm_config
@@ -139,6 +159,22 @@ def _minimal_args(**overrides) -> SimpleNamespace:
         enable_server_load_tracking=False,
         trust_remote_code=True,
         deploy_config=None,
+        # Read by the chat serving a generating duplex model keeps.
+        chat_template=None,
+        chat_template_content_format="auto",
+        trust_request_chat_template=False,
+        default_chat_template_kwargs=None,
+        response_role="assistant",
+        return_tokens_as_token_ids=False,
+        enable_auto_tool_choice=False,
+        exclude_tools_when_tool_choice_none=False,
+        tool_call_parser=None,
+        structured_outputs_config=SimpleNamespace(reasoning_parser=None),
+        enable_prompt_tokens_details=False,
+        enable_force_include_usage=False,
+        enable_log_outputs=False,
+        enable_log_deltas=False,
+        log_error_stack=False,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -197,14 +233,16 @@ def test_duplex_model_probe_propagates_resolution_errors(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_duplex_app_state_wires_only_the_session_handler(monkeypatch) -> None:
-    """Lock the duplex ``app.state``: the session handler is live, every turn-based service is None.
+async def test_duplex_app_state_wires_the_session_handler_and_chat(monkeypatch) -> None:
+    """Lock the duplex ``app.state``: sessions plus chat, and nothing else.
 
-    Fails if a turn-based service is wired into a duplex server (its route
-    would answer instead of reporting "not available"), or if a key the routes
-    read disappears.
+    Fails if a turn-based service other than chat is wired into a duplex server
+    (its route would answer instead of reporting "not available"), or if a key
+    the routes read disappears.
     """
     monkeypatch.setattr(api_server, "OpenAIServingModels", _FakeModels)
+    monkeypatch.setattr(api_server, "OnlineRenderer", lambda **kwargs: object())
+    monkeypatch.setattr(api_server, "OmniOpenAIServingChat", lambda **kwargs: object())
     engine = _FakeDuplexOmni()
     state = State()
 
@@ -214,11 +252,30 @@ async def test_duplex_app_state_wires_only_the_session_handler(monkeypatch) -> N
     assert present == _DUPLEX_APP_STATE_KEYS
     not_wired = sorted(key for key in _DUPLEX_MUST_BE_WIRED if getattr(state, key) is None)
     assert not not_wired, f"duplex app.state keys registered but not wired: {not_wired}"
-    unexpectedly_set = sorted(key for key in _DUPLEX_MUST_BE_NONE if getattr(state, key) is not None)
+    unexpectedly_set = sorted(
+        key for key in _DUPLEX_MUST_BE_NONE - _CHAT_WHEN_GENERATING if getattr(state, key) is not None
+    )
     assert not unexpectedly_set, f"turn-based services wired into a duplex server: {unexpectedly_set}"
     assert isinstance(state.openai_serving_duplex, OmniDuplexSessionHandler)
+    assert state.openai_serving_chat is not None, "a generating duplex model must keep /v1/chat/completions"
     assert state.engine_client is engine
     assert state.vllm_config is engine._vllm_config
+
+
+async def test_a_duplex_model_that_cannot_generate_gets_no_chat_route(monkeypatch) -> None:
+    """Support follows the pipeline's tasks, not the model's name.
+
+    A duplex pipeline that does not report ``generate`` has nothing to answer a
+    chat request with, so the route stays off and the startup log says why.
+    """
+    monkeypatch.setattr(api_server, "OpenAIServingModels", _FakeModels)
+    engine = _FakeDuplexOmni(supported_tasks=())
+    state = State()
+
+    await api_server.omni_init_app_state(engine, state, _minimal_args())
+
+    assert state.openai_serving_chat is None
+    assert isinstance(state.openai_serving_duplex, OmniDuplexSessionHandler)
 
 
 # --------------------------------------------------------------------------- #
