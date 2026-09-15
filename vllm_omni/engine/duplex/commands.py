@@ -17,17 +17,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, ClassVar
 
+from vllm_omni.protocol.realtime.errors import RealtimeProtocolError
+
 if TYPE_CHECKING:
-    from vllm_omni.engine.duplex.realtime_commands import RealtimeInputDefaults
+    from vllm_omni.protocol.realtime.session import RealtimeInputDefaults
 
 
-class DuplexCommandError(ValueError):
-    """A client payload could not be turned into a command."""
+class DuplexCommandError(RealtimeProtocolError):
+    """A client payload could not be turned into a duplex command.
 
-    def __init__(self, message: str, *, code: str = "bad_event", event_id: str | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.event_id = event_id
+    The duplex name for a Realtime protocol error: same ``code`` /
+    ``event_id`` contract, so the error envelope is rendered identically
+    whichever consumer raised it.
+    """
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -23,60 +23,14 @@ from dataclasses import dataclass, field, fields
 from typing import ClassVar, cast
 from uuid import uuid4
 
+# The error-type table is wire protocol, not duplex runtime: it is defined once in
+# the shared codec and re-exported here for the importers that already use it.
+from vllm_omni.protocol.realtime.errors import REALTIME_ERROR_TYPES_BY_CODE
+
 
 def new_event_id() -> str:
     return f"event_{uuid4().hex}"
 
-
-#: OpenAI Realtime ``error.type`` for each internal error code.
-REALTIME_ERROR_TYPES_BY_CODE: dict[str, str] = {
-    "bad_event": "invalid_request_error",
-    "bad_audio": "invalid_request_error",
-    "config_timeout": "invalid_request_error",
-    "invalid_json": "invalid_request_error",
-    "event_too_large": "invalid_request_error",
-    "unknown_event": "invalid_request_error",
-    "internal_error": "server_error",
-    "runtime_append_failed": "server_error",
-    "runtime_append_task_failed": "server_error",
-    "runtime_signal_failed": "server_error",
-    "runtime_abort_failed": "server_error",
-    "runtime_data_plane_stream_failed": "server_error",
-    "runtime_data_plane_text_without_audio": "server_error",
-    "resource_exhausted": "rate_limit_error",
-    "session_exists": "invalid_request_error",
-    "session_closed": "invalid_request_error",
-    "unknown_session": "invalid_request_error",
-    "invalid_duplex_runtime_config": "invalid_request_error",
-    "instructions_update_unsupported": "invalid_request_error",
-    "persona_update_unsupported": "invalid_request_error",
-    "voice_update_unsupported": "invalid_request_error",
-    "unsupported_nemotron_duplex_mode": "invalid_request_error",
-    "unsupported_native_response_options": "invalid_request_error",
-    "runtime_touch_failed": "server_error",
-    "engine_error": "server_error",
-    "input_backpressure": "rate_limit_error",
-    "response_already_active": "invalid_request_error",
-    "response_not_active": "invalid_request_error",
-    "response_create_without_input": "invalid_request_error",
-    "input_audio_buffer_empty": "invalid_request_error",
-    "missing_item_id": "invalid_request_error",
-    "item_not_found": "invalid_request_error",
-    "playback_item_mismatch": "invalid_request_error",
-    "playback_item_not_found": "invalid_request_error",
-    "playback_ack_too_late": "invalid_request_error",
-    "unsupported_audio_format": "invalid_request_error",
-    "unsupported_turn_detection": "invalid_request_error",
-    "unsupported_ref_audio_path": "invalid_request_error",
-    "ref_audio_required": "invalid_request_error",
-    "model_update_unsupported": "invalid_request_error",
-    "voice_update_after_audio_unsupported": "invalid_request_error",
-    "ref_audio_update_unsupported": "invalid_request_error",
-    "native_text_append_unsupported": "invalid_request_error",
-    "invalid_video_frames": "invalid_request_error",
-    "invalid_function_call_output": "invalid_request_error",
-    "server_vad_unavailable": "server_error",
-}
 
 _IDENTITY_FIELDS = frozenset({"session_id", "epoch", "event_id"})
 

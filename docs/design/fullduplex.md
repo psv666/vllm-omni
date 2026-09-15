@@ -9,6 +9,11 @@ the owner document for `vllm_omni/engine/duplex/**`,
 `vllm_omni/entrypoints/duplex_omni.py`, `vllm_omni/entrypoints/duplex/**`,
 `vllm_omni/clients/**` and the per-model `duplex/` packages.
 
+`vllm_omni/protocol/realtime/**` is the shared OpenAI Realtime wire codec that
+duplex is built on. Duplex is its first consumer but not its owner: the codec
+is deliberately runtime-agnostic so a second Realtime surface can reuse it
+(RFC #6592 P0a).
+
 The public wire contract lives in
 [`docs/serving/realtime_duplex_api.md`](../serving/realtime_duplex_api.md);
 this page describes how it is produced.
@@ -112,6 +117,17 @@ plugin and the session runtime config to `DuplexOrchestrator` directly.
    attachment/resume/replay bookkeeping; it holds no session state.
 6. **No `typing.Protocol`** in the duplex surfaces: the plugin, data plane,
    session state, PCM buffer, stage port and client transport seams are ABCs.
+7. **The wire codec is not duplex.** Parsing, validating and decoding a
+   Realtime client event, the audio format negotiation, the conversation-item
+   rules and the error envelope are model- and runtime-agnostic, and live in
+   `vllm_omni/protocol/realtime/**`. `engine/duplex/realtime_commands.py` and
+   `engine/duplex/realtime_events.py` are the *duplex binding* of that codec:
+   they decide which `DuplexCommand` a decoded event becomes and hold the
+   session's projection state. The codec may not import the engine, the
+   entrypoints, `model_executor` or the clients
+   (`tests/protocol/realtime/test_protocol_import_boundary.py`), and there is
+   exactly one implementation of each codec behaviour
+   (`tests/protocol/realtime/test_realtime_codec_single_source.py`).
 
 ## Package layout
 
@@ -129,6 +145,14 @@ vllm_omni/
 │   │   ├── audio_encoding.py        encode_audio, injected into DuplexOmniEngine for the plugin's data plane
 │   │   └── websocket.py             websocket send/close/receive helpers
 │   └── openai/api_server.py         builds DuplexOmni for duplex models; duplex-only app state
+├── protocol/realtime/               SHARED WIRE CODEC (no engine / no model / no transport)
+│   ├── formats.py                   audio format spellings, what is supported, per-session validation
+│   ├── session.py                   session-object readers; RealtimeInputDefaults (append defaults)
+│   ├── items.py                     conversation item shape, truncation, transcripts, camera frames
+│   ├── audio_input.py               decode_audio_append -> RealtimeAudioAppend; client speech hints
+│   ├── audio.py                     PCM / G.711 / WAV decode, resample, re-encode
+│   ├── errors.py                    RealtimeProtocolError, REALTIME_ERROR_TYPES_BY_CODE
+│   └── capabilities.py              RealtimeProtocolCapabilities: what one consumer can serve
 ├── engine/
 │   ├── omni_engine_base.py          OmniEngineBase (stage processes, orchestrator thread, queues, RPC)
 │   ├── async_omni_engine.py         AsyncOmniEngine (turn-based request building)
@@ -137,15 +161,17 @@ vllm_omni/
 │   ├── duplex_orchestrator.py       DuplexOrchestrator (+ DuplexOrchestratorRequestState; implements DuplexStagePort)
 │   └── duplex/
 │       ├── commands.py              DuplexCommand dataclasses, command_from_realtime
-│       ├── realtime_commands.py     Realtime client event -> DuplexCommand translation
-│       ├── events.py                DuplexEvent dataclasses (+ to_realtime), REALTIME_ERROR_TYPES_BY_CODE
+│       ├── realtime_commands.py     duplex binding of the codec: decoded event -> DuplexCommand,
+│       │                            DUPLEX_REALTIME_CAPABILITIES, duplex_response_format
+│       ├── events.py                DuplexEvent dataclasses (+ to_realtime)
 │       ├── realtime_events.py       RealtimeProjectionState: internal event -> typed events
 │       ├── messages.py              queue envelopes (Open/Close/Resume/Touch/Command/Result/Event), DuplexSessionError
 │       ├── config.py                DuplexSessionConfig, DuplexCapabilities, ResponseCreateOptions
 │       ├── contracts.py             DuplexFence (session_id, epoch, turn_id), stage request records, DuplexStagePort
 │       ├── plugin.py                DuplexModelPlugin, DuplexModelSessionState, DuplexDataPlane, PcmAppendBuffer ABCs
 │       ├── turn_detection.py        server-side VAD turn detector used by the session
-│       ├── audio.py / vad.py / intermediate.py
+│       ├── audio.py                  compatibility re-export of protocol/realtime/audio.py
+│       ├── vad.py / intermediate.py
 │       └── session/                 one engine-resident session and everything that runs it
 │           ├── engine_session.py    DuplexEngineSession: ledgers, lease, fence, stage resources, append sequencing
 │           ├── runner.py            DuplexSessionRunner (per-session mailbox on the orchestrator loop)
