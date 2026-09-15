@@ -288,6 +288,13 @@ class OmniServeCommand(CLISubcommand):
             help="Enable vLLM-Omni mode for multi-modal and diffusion models",
         )
 
+        omni_config_group.add_argument(
+            "--realtime-profile",
+            choices=["qwen3-legacy", "openai-realtime"],
+            default="qwen3-legacy",
+            help="Default Qwen3 /v1/realtime protocol. A connection can override it with ?profile=.",
+        )
+
         try:
             omni_config_group.add_argument(
                 "--enable-sleep-mode",

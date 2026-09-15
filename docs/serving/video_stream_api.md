@@ -1,5 +1,9 @@
 # Streaming Video Input API
 
+For Qwen3 text/audio/image conversations using the official SDK, see
+[OpenAI Realtime GA](openai_realtime_qwen3.md). The default profile remains
+`qwen3-legacy`.
+
 vLLM-Omni provides a WebSocket API for streaming video frames and optional audio chunks into Qwen3-Omni, then asking questions over the buffered session context.
 
 Each server instance runs a single model specified at startup with `vllm serve <model> --omni`.
