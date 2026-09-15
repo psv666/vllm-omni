@@ -12,6 +12,9 @@ This guide focuses on vLLM-Omni's primary task endpoints. Compatible models
 may also expose standard routes inherited from vLLM, such as
 `POST /v1/completions`; those routes remain model- and task-dependent.
 
+Qwen3-Omni supports text, audio, and image conversations through an opt-in
+[OpenAI Realtime GA profile](openai_realtime_qwen3.md).
+
 ## Start and Verify the Server
 
 Start a model with the shared serving command:

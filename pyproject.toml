@@ -43,6 +43,7 @@ dev = [
     "pytest-shard==0.1.2",
     "pytest-xdist==3.8.0",
     "websockets==16.1",
+    "openai[realtime]>=2.45.0",
     "pytest-subtests==0.15.0",
     "filelock>=3.16.1,<4",
     "datasets==3.6.0",

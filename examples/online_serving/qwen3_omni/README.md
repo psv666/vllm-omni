@@ -573,3 +573,17 @@ The gradio script supports the following arguments:
 - `--ip`: Host/IP for Gradio server (default: 127.0.0.1)
 - `--port`: Port for Gradio server (default: 7861)
 - `--share`: Share the Gradio demo publicly (creates a public link)
+
+### OpenAI Realtime GA client
+
+Serve the full pipeline with `--realtime-profile openai-realtime`, install
+`openai[realtime]`, and use the official SDK example:
+
+```bash
+python examples/online_serving/qwen3_omni/openai_realtime_video_client.py --image frame.jpg --query "Describe the image." --output audio
+```
+
+The client also supports `--video` (requires OpenCV and explicitly enables
+rolling frame retention) and `--input-wav` (mono PCM16 24 kHz).
+See [the protocol guide](../../../docs/serving/openai_realtime_qwen3.md)
+for lifecycle, formats, limits, and migration from the legacy endpoints.

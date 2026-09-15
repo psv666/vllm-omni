@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Base WebSocket handler for streaming video input understanding.
 
-Shared session loop, frame/audio buffering, EVS pre-filter, prewarm,
-interrupt handling, and engine ``generate()`` streaming. Pipeline-specific
-behavior (trigger rules, prompt shape, history) is supplied by subclasses
-via :class:`VideoStreamPipelineHooks`.
+Legacy WebSocket translation, EVS pre-filter and prewarm.
+Conversation storage and response execution use the shared RealtimeRuntime;
+Pipeline-specific prompt hooks adapt the legacy buffers to engine ``generate()`` streaming.
+Subclasses supply trigger rules and prompt construction through :class:`VideoStreamPipelineHooks`.
 
 Protocol:
     Client -> Server:
@@ -36,7 +36,7 @@ import time as _time
 import uuid
 import wave
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Final, Protocol, TypeAlias, runtime_checkable
 
@@ -51,7 +51,10 @@ from vllm_omni.entrypoints.openai.video_frame_filter import FrameSimilarityFilte
 from vllm_omni.entrypoints.openai.video_stream_context import (
     text_only_message,
 )
-from vllm_omni.entrypoints.utils import coerce_param_message_types
+from vllm_omni.entrypoints.realtime.contracts import CancelResponse, Content, CreateResponse, Item
+from vllm_omni.entrypoints.realtime.legacy import HistoryView, LegacySession
+from vllm_omni.entrypoints.realtime.qwen3 import Qwen3RealtimeAdapter
+from vllm_omni.entrypoints.realtime.video import sample_frame_indices
 from vllm_omni.outputs import OmniRequestOutput
 
 logger = init_logger(__name__)
@@ -90,7 +93,7 @@ class VideoStreamPipelineHooks(Protocol):
         config: "StreamingVideoSessionConfig",
         frame_buffer: list[str],
         audio_buffer: bytearray,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         query_text: str,
         prewarmed_frames: Mapping[str, PrewarmedFrame],
         *,
@@ -101,7 +104,7 @@ class VideoStreamPipelineHooks(Protocol):
 
     def on_turn_complete(
         self,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         user_message: dict[str, Any],
         response_text: str,
     ) -> None:
@@ -178,7 +181,7 @@ class OmniStreamingVideoHandler:
         config: StreamingVideoSessionConfig,
         frame_buffer: list[str],
         audio_buffer: bytearray,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         query_text: str,
         prewarmed_frames: Mapping[str, PrewarmedFrame],
         *,
@@ -188,7 +191,7 @@ class OmniStreamingVideoHandler:
 
     def on_turn_complete(
         self,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         user_message: dict[str, Any],
         response_text: str,
     ) -> None:
@@ -229,18 +232,23 @@ class OmniStreamingVideoHandler:
             if config is None:
                 return
 
-            frame_buffer: list[str] = []  # base64-encoded JPEG frames
+            legacy = LegacySession(
+                Qwen3RealtimeAdapter(
+                    self._chat_service, self._engine_client, preprocess=self._preprocess_to_engine_prompt
+                ),
+                model=config.model or "default",
+                max_frames=config.max_frames,
+            )
+            frame_buffer = legacy.frames
             frame_metadata: list[dict[str, Any]] = []
             # Per-frame PIL cache + uuid for mm_hash reuse. Aligned with frame_buffer by index.
             frame_pil_cache: dict[str, PrewarmedFrame] = {}  # b64 -> (PIL.Image, uuid) or _BAD_FRAME
             frame_filter = (
                 FrameSimilarityFilter(threshold=config.frame_filter_threshold) if config.enable_frame_filter else None
             )
-            audio_buffer = bytearray()  # raw PCM16 16kHz mono
-            message_history: Any = self.create_message_history(config)
+            audio_buffer = legacy.store.audio_buffer
+            message_history = legacy.history
             active_request_id: str | None = None
-            prev_request_id: str | None = None  # abort target iff prev was interrupted
-            prev_was_interrupted: bool = False
             interrupt_event = asyncio.Event()
             prewarm_tasks: set[asyncio.Task[Any]] = set()
             query_task: asyncio.Task[Any] | None = None
@@ -287,18 +295,12 @@ class OmniStreamingVideoHandler:
                     await msg_queue.put(None)
                     raise
 
-            async def _cancel_active_query(*, abort_now: bool = False) -> None:
-                """Signal soft interrupt for the active query."""
-                nonlocal active_request_id, prev_was_interrupted, query_task
+            async def _cancel_active_query() -> None:
+                """Stop the projector; its cleanup waits for the shared runtime abort."""
+                nonlocal active_request_id, query_task
                 if active_request_id is not None:
                     interrupt_event.set()
-                    prev_was_interrupted = True
                     logger.info("Interrupt signaled for %s", active_request_id)
-                    if abort_now and self._engine_client:
-                        try:
-                            await self._engine_client.abort(active_request_id)
-                        except Exception:
-                            logger.debug("Abort failed for %s", active_request_id, exc_info=True)
                     if query_task is not None and not query_task.done():
                         query_task.cancel()
                         await asyncio.gather(query_task, return_exceptions=True)
@@ -306,20 +308,13 @@ class OmniStreamingVideoHandler:
 
             async def _start_query_turn(*, query_text: str) -> None:
                 """Schedule a new inference turn from the current buffers."""
-                nonlocal active_request_id, prev_request_id, prev_was_interrupted, query_task
+                nonlocal active_request_id, query_task
 
                 await _cancel_active_query()
 
                 if not frame_buffer:
                     await self._send_error(websocket, "No frames buffered")
                     return
-
-                if prev_was_interrupted and prev_request_id and self._engine_client:
-                    try:
-                        await self._engine_client.abort(prev_request_id)
-                    except Exception:
-                        pass
-                prev_was_interrupted = False
 
                 request_id = f"video-{uuid.uuid4().hex[:12]}"
                 active_request_id = request_id
@@ -331,7 +326,7 @@ class OmniStreamingVideoHandler:
                 query_prewarmed_frames = dict(frame_pil_cache)
 
                 async def _run_query() -> None:
-                    nonlocal active_request_id, prev_request_id
+                    nonlocal active_request_id
                     try:
                         process_kwargs: dict[str, Any] = {}
                         if any(metadata.get("frame_id") for metadata in query_frame_metadata):
@@ -350,19 +345,18 @@ class OmniStreamingVideoHandler:
                         )
                     finally:
                         if active_request_id == request_id:
-                            prev_request_id = request_id
                             active_request_id = None
 
                 query_task = asyncio.create_task(_run_query())
 
             async def _processor() -> None:
                 """Process enqueued messages."""
-                nonlocal active_request_id, prev_request_id, prev_was_interrupted, query_task
+                nonlocal active_request_id, query_task
 
                 while True:
                     msg = await msg_queue.get()
                     if msg is None:
-                        await _cancel_active_query(abort_now=True)
+                        await _cancel_active_query()
                         return
 
                     msg_type = msg.get("type")
@@ -530,7 +524,8 @@ class OmniStreamingVideoHandler:
                 if prewarm_tasks:
                     await asyncio.gather(*prewarm_tasks, return_exceptions=True)
                 if query_task is not None and not query_task.done():
-                    await _cancel_active_query(abort_now=True)
+                    await _cancel_active_query()
+                await legacy.runtime.close()
 
         except WebSocketDisconnect:
             logger.info("Streaming video: client disconnected")
@@ -589,7 +584,7 @@ class OmniStreamingVideoHandler:
         config: StreamingVideoSessionConfig,
         frame_buffer: list[str],
         audio_buffer: bytearray,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         query_text: str,
         request_id: str,
         interrupt_event: asyncio.Event,
@@ -628,23 +623,16 @@ class OmniStreamingVideoHandler:
         config: StreamingVideoSessionConfig,
         frame_buffer: list[str],
         audio_buffer: bytearray,
-        message_history: list[dict[str, Any]],
+        message_history: list[dict[str, Any]] | HistoryView,
         query_text: str,
         request_id: str,
         interrupt_event: asyncio.Event,
         prewarmed_frames: Mapping[str, PrewarmedFrame],
         frame_metadata: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Direct engine_client.generate() path for async_chunk audio."""
-        engine_client = self._engine_client
-        assert engine_client is not None, "_process_query must validate the engine client"
+        """Project a shared-runtime response into legacy text/WAV events."""
+        from contextlib import aclosing
 
-        from vllm.entrypoints.openai.chat_completion.protocol import (
-            ChatCompletionRequest,
-        )
-
-        # Select once from this turn's snapshot so prompt images and the
-        # consumed event refer to exactly the same frames, including decode failures.
         frame_indices = self._sample_frame_indices(frame_buffer, config.num_frames, prewarmed_frames)
         messages, user_message = self.build_engine_prompt(
             config,
@@ -655,201 +643,131 @@ class OmniStreamingVideoHandler:
             prewarmed_frames,
             frame_indices=frame_indices,
         )
-
-        request_kwargs: dict[str, Any] = {
-            "model": config.model or "default",
-            "messages": messages,
-            "stream": True,
-            "modalities": config.modalities,
-            "add_generation_prompt": True,
-            "continue_final_message": False,
-            "add_special_tokens": False,
-        }
-        if config.use_audio_in_video and len(audio_buffer) > 0:
-            request_kwargs["mm_processor_kwargs"] = {
-                "use_audio_in_video": True,
-            }
-        sampling_kwargs: dict[str, Any] = {}
+        persistent = isinstance(message_history, HistoryView)
+        legacy = (
+            message_history.session
+            if isinstance(message_history, HistoryView)
+            else LegacySession(
+                Qwen3RealtimeAdapter(
+                    self._chat_service, self._engine_client, preprocess=self._preprocess_to_engine_prompt
+                ),
+                model=config.model or "default",
+                max_frames=config.max_frames,
+            )
+        )
+        runtime = legacy.runtime
         try:
-            chat_request = ChatCompletionRequest(**request_kwargs)
-            if config.sampling_params_list:
-                params = self._chat_service._to_sampling_params_list(config.sampling_params_list)
-                # Explicit params must retain the engine's streaming output mode.
-                sampling_kwargs["sampling_params_list"] = coerce_param_message_types(params, is_streaming=True)
-        except Exception as e:
-            await self._send_error(websocket, f"Failed to build request: {e}")
-            return
-
-        try:
-            engine_prompt = await self._preprocess_to_engine_prompt(chat_request)
-        except Exception as e:
-            await self._send_error(websocket, f"Preprocess failed: {e}")
+            legacy.adapter.prepared = await legacy.adapter.adapter.prepare(
+                messages,
+                {
+                    "model": config.model or "default",
+                    "output_modalities": config.modalities,
+                    "omni": {
+                        "_legacy_output_modalities": True,
+                        "use_audio_in_video": config.use_audio_in_video,
+                        "sampling_params_list": config.sampling_params_list,
+                        "_audio_chunk_mode": video_stream_envs.VLLM_VIDEO_ASYNC_CHUNK,
+                        "_audio_delta_mode": video_stream_envs.VLLM_VIDEO_AUDIO_DELTA_MODE,
+                    },
+                },
+                has_audio=bool(audio_buffer),
+            )
+        except Exception as exc:
+            await self._send_error(websocket, f"Failed to build or preprocess request: {exc}")
+            if not persistent:
+                await runtime.close()
             return
         decoded_ready_ts_ms = _time.monotonic() * 1000
         selected_metadata = [frame_metadata[index] for index in frame_indices] if frame_metadata else []
         model_selected_ts_ms = _time.monotonic() * 1000
-
-        await websocket.send_json({"type": "response.start"})
-        text_parts: list[str] = []
-        text_done_sent = False
-        audio_chunk_count = 0
-        # Number of per-step tensors in OmniRequestOutput.audio_data already
-        # drained. Used by the fast path to skip already-emitted history.
-        audio_chunks_drained = 0
-        previous_text = ""
-        interrupted = False
-        frames_consumed_sent = False
-        t_start = _time.monotonic()
-        t_first_text = None
-        t_first_audio = None
-
-        # Wire-level async-chunk switch. "off" means
-        # buffer all deltas server-side and flush once at the end; the engine
-        # pipeline still overlaps internally.
-        async_chunk_mode = video_stream_envs.VLLM_VIDEO_ASYNC_CHUNK
-        streaming = async_chunk_mode == "on"
-        audio_tail_tensors: list[Any] = []
-
+        # Only text from previous legacy turns is retained; selected media lives
+        # in the immutable prepared prompt until the shared iterator is closed.
+        user_item = Item("user", (Content("text", text=query_text),))
+        runtime.store.insert(user_item)
+        response_config = replace(
+            runtime.store.config, output_mode="audio" if config.modalities == ["audio"] else "text"
+        )
+        await runtime.submit(CreateResponse(config=response_config, request_id=request_id))
+        audio_sent = False
+        consumed_sent = False
+        completed = False
         try:
-            result_gen = engine_client.generate(
-                prompt=engine_prompt,
-                request_id=request_id,
-                output_modalities=config.modalities,
-                **sampling_kwargs,
-            )
-
-            async for output in result_gen:
-                # Soft interrupt: drain without sending
-                if interrupt_event.is_set():
-                    if not interrupted:
-                        logger.info("Generation interrupted — draining")
-                        interrupted = True
-                    continue
-
-                if not isinstance(output, OmniRequestOutput):
-                    continue
-
-                if not frames_consumed_sent and frame_metadata:
-                    await websocket.send_json(
-                        {
-                            "type": "video.frames.consumed",
-                            "request_id": request_id,
-                            "model_selected_ts_ms": model_selected_ts_ms,
-                            "frame_ids": [
-                                metadata["frame_id"]
-                                for metadata in selected_metadata
-                                if isinstance(metadata.get("frame_id"), str)
-                            ],
-                            "frames": [
+            async with aclosing(runtime.events()) as events:
+                async for event in events:
+                    if event.delivery is not None and event.delivery.cancelled:
+                        continue
+                    if event.kind == "response_started":
+                        await websocket.send_json({"type": "response.start"})
+                    elif event.kind == "delta":
+                        if not consumed_sent and frame_metadata:
+                            await websocket.send_json(
                                 {
-                                    "frame_id": metadata.get("frame_id"),
-                                    "pts_ms": metadata.get("pts_ms"),
-                                    "source_pts_ms": metadata.get("source_pts_ms"),
-                                    "quality_profile": metadata.get("quality_profile"),
-                                    "receiver_received_ts_ms": metadata.get("receiver_received_ts_ms"),
-                                    "decoded_ready_ts_ms": decoded_ready_ts_ms,
+                                    "type": "video.frames.consumed",
+                                    "request_id": request_id,
+                                    "model_selected_ts_ms": model_selected_ts_ms,
+                                    "frame_ids": [
+                                        m["frame_id"] for m in selected_metadata if isinstance(m.get("frame_id"), str)
+                                    ],
+                                    "frames": [
+                                        {
+                                            **{
+                                                key: m.get(key)
+                                                for key in (
+                                                    "frame_id",
+                                                    "pts_ms",
+                                                    "source_pts_ms",
+                                                    "quality_profile",
+                                                    "receiver_received_ts_ms",
+                                                )
+                                            },
+                                            "decoded_ready_ts_ms": decoded_ready_ts_ms,
+                                        }
+                                        for m in selected_metadata
+                                    ],
+                                    "latest_pts_ms": selected_metadata[-1].get("pts_ms") if selected_metadata else None,
                                 }
-                                for metadata in selected_metadata
-                            ],
-                            "latest_pts_ms": selected_metadata[-1].get("pts_ms") if selected_metadata else None,
-                        }
-                    )
-                    frames_consumed_sent = True
-
-                out_type = getattr(output, "final_output_type", "text")
-
-                if out_type == "audio":
-                    if streaming and not text_done_sent:
-                        full_text = "".join(text_parts)
-                        await websocket.send_json({"type": "response.text.done", "text": full_text})
-                        text_done_sent = True
-
-                    if t_first_audio is None:
-                        t_first_audio = _time.monotonic()
-                    audio_chunk_count += 1
-                    if streaming:
-                        b64, audio_chunks_drained = self._extract_audio_delta_b64(
-                            output,
-                            audio_chunks_drained,
-                        )
-                        if b64:
+                            )
+                            consumed_sent = True
+                        delta = event.value
+                        if delta.text and video_stream_envs.VLLM_VIDEO_ASYNC_CHUNK == "on":
+                            await websocket.send_json({"type": "response.text.delta", "delta": delta.text})
+                        if delta.audio is not None:
                             await websocket.send_json(
                                 {
                                     "type": "response.output_audio.delta",
-                                    "data": b64,
+                                    "data": self._encode_audio_wav_b64(delta.audio),
                                     "format": "wav",
                                 }
                             )
-                    else:
-                        audio_data = self._get_audio_data(output)
-                        if audio_data is not None:
-                            if isinstance(audio_data, list):
-                                audio_tail_tensors = list(audio_data)
-                            else:
-                                audio_tail_tensors = [audio_data]
-                else:
-                    delta_text, previous_text = self._extract_text_delta(
-                        output,
-                        previous_text,
-                    )
-                    if delta_text:
-                        if t_first_text is None:
-                            t_first_text = _time.monotonic()
-                        text_parts.append(delta_text)
-                        if streaming:
-                            await websocket.send_json({"type": "response.text.delta", "delta": delta_text})
-
-            if not text_done_sent:
-                full_text = "".join(text_parts)
-                await websocket.send_json({"type": "response.text.done", "text": full_text})
-                text_done_sent = True
-
-            if not streaming and audio_tail_tensors:
-                try:
-                    coalesced = (
-                        audio_tail_tensors[0] if len(audio_tail_tensors) == 1 else torch.cat(audio_tail_tensors, dim=-1)
-                    )
-                    tail_np = self._tensor_to_1d_np(coalesced)
-                    b64, _ = self._encode_tail(
-                        tail_np,
-                        0,
-                        new_drained=len(audio_tail_tensors),
-                        is_first=True,
-                    )
-                    if b64:
-                        await websocket.send_json(
-                            {
-                                "type": "response.output_audio.delta",
-                                "data": b64,
-                                "format": "wav",
-                            }
-                        )
-                except Exception:
-                    logger.exception("Failed to coalesce off-path audio")
-
-            if audio_chunk_count > 0:
-                await websocket.send_json({"type": "response.output_audio.done"})
-
-            response_text = "".join(text_parts)
-            self.on_turn_complete(message_history, user_message, response_text)
-
-            t_end = _time.monotonic()
-            logger.info(
-                "[TIMING] mode=%s total=%.2fs first_text=%.2fs first_audio=%.2fs audio_chunks=%d",
-                async_chunk_mode,
-                t_end - t_start,
-                (t_first_text - t_start) if t_first_text else -1,
-                (t_first_audio - t_start) if t_first_audio else -1,
-                audio_chunk_count,
-            )
-
-        except Exception:
-            logger.exception("Engine query failed")
-            await self._send_error(websocket, "Query processing failed")
-
-        if not text_done_sent:
-            full_text = "".join(text_parts)
-            await websocket.send_json({"type": "response.text.done", "text": full_text})
+                            audio_sent = True
+                    elif event.kind == "response_finished":
+                        response = event.value
+                        if response.status == "cancelled":
+                            break
+                        text = response.item.content[0].text
+                        await websocket.send_json({"type": "response.text.done", "text": text})
+                        if audio_sent:
+                            await websocket.send_json({"type": "response.output_audio.done"})
+                        if response.status == "failed":
+                            await self._send_error(websocket, "Query processing failed")
+                        if not persistent:
+                            self.on_turn_complete(message_history, user_message, text)
+                        completed = True
+                        break
+        finally:
+            if runtime.active_response:
+                await asyncio.shield(runtime.submit(CancelResponse()))
+            if persistent:
+                if not completed:
+                    for item in (user_item, runtime.store.last_response.item if runtime.store.last_response else None):
+                        if item is not None and any(existing.id == item.id for existing in runtime.store.items):
+                            runtime.store.delete(item.id)
+                legacy.prune_history()
+                # A cancelled projector leaves its terminal queued. Drain it
+                # before the next response gets a new projector.
+                runtime.discard_pending_events()
+            else:
+                await runtime.close()
 
     # ------------------------------------------------------------------
     # Audio helpers
@@ -1085,12 +1003,7 @@ class OmniStreamingVideoHandler:
         prewarmed_frames: Mapping[str, PrewarmedFrame],
     ) -> list[int]:
         """Stride-sample with the last frame, then drop known bad frames without refilling."""
-        n_buf = len(frame_buffer)
-        if n_buf <= num_frames:
-            indices = list(range(n_buf))
-        else:
-            stride = max(1, n_buf // num_frames)
-            indices = [index * stride for index in range(num_frames - 1)] + [n_buf - 1]
+        indices = sample_frame_indices(len(frame_buffer), num_frames)
         return [index for index in indices if prewarmed_frames.get(frame_buffer[index]) is not _BAD_FRAME]
 
     @staticmethod

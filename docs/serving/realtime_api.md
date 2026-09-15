@@ -1,5 +1,9 @@
 # Realtime Audio WebSocket API
 
+For Qwen3 text/audio/image conversations using the official SDK, see
+[OpenAI Realtime GA](openai_realtime_qwen3.md). The default profile remains
+`qwen3-legacy`.
+
 Use `WS /v1/realtime` to stream PCM audio into a compatible omni model and
 receive incremental transcription and synthesized response audio. This is a
 turn-based streaming API: it starts one generation over an audio stream and
