@@ -3042,11 +3042,6 @@ async def benchmark(
             "duration": benchmark_duration,
             "completed": metrics.completed,
             "failed": metrics.failed,
-            "num_ttft_samples": getattr(metrics, "num_ttft_samples"),
-            "num_tpot_samples": getattr(metrics, "num_tpot_samples"),
-            "num_itl_samples": getattr(metrics, "num_itl_samples"),
-            "num_audio_ttfp_samples": getattr(metrics, "num_audio_ttfp_samples"),
-            "num_audio_rtf_samples": getattr(metrics, "num_audio_rtf_samples"),
             "total_input_tokens": metrics.total_input,
             "total_output_tokens": metrics.total_output,
             "request_throughput": metrics.request_throughput,
@@ -3083,6 +3078,14 @@ async def benchmark(
             "max_concurrent_requests": metrics.max_concurrent_requests,
             "rtfx": metrics.rtfx,
         }
+        for sample_count in (
+            "num_ttft_samples",
+            "num_tpot_samples",
+            "num_itl_samples",
+            "num_audio_ttfp_samples",
+            "num_audio_rtf_samples",
+        ):
+            result[sample_count] = getattr(metrics, sample_count)
     else:
         result = {
             "duration": benchmark_duration,
