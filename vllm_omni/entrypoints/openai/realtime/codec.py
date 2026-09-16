@@ -14,7 +14,7 @@ from typing import Any
 import pybase64 as base64
 from PIL import Image, UnidentifiedImageError
 
-from vllm_omni.entrypoints.realtime.contracts import (
+from vllm_omni.entrypoints.openai.realtime.contracts import (
     AppendAudio,
     CancelResponse,
     ClearAudio,

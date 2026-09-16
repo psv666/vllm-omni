@@ -16,9 +16,9 @@ from starlette.websockets import WebSocketDisconnect
 from tests.entrypoints.realtime.test_runtime import Adapter
 from vllm_omni.entrypoints.openai.realtime.codec import decode_event, encode_item
 from vllm_omni.entrypoints.openai.realtime.connection import RealtimeGAConnection
+from vllm_omni.entrypoints.openai.realtime.contracts import RealtimeError, SessionConfig
 from vllm_omni.entrypoints.openai.realtime.events import GAEventEncoder
 from vllm_omni.entrypoints.openai.realtime.routing import select_realtime_route
-from vllm_omni.entrypoints.realtime.contracts import RealtimeError, SessionConfig
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -264,7 +264,7 @@ async def test_real_route_rejects_conflicts_before_allocating_qwen_state(monkeyp
 
 
 def test_streaming_pcm_conversion_preserves_chunk_boundaries():
-    from vllm_omni.entrypoints.realtime.contracts import Item, Response
+    from vllm_omni.entrypoints.openai.realtime.contracts import Item, Response
 
     response = Response("resp", "req", Item("assistant", ()), "audio")
     samples = np.sin(np.arange(4800, dtype=np.float32) / 100)
@@ -284,7 +284,7 @@ def test_large_buffered_audio_is_split_below_sdk_limit_without_changing_samples(
 
     import numpy as np
 
-    from vllm_omni.entrypoints.realtime.contracts import Item, Response
+    from vllm_omni.entrypoints.openai.realtime.contracts import Item, Response
 
     response = Response("resp", "req", Item("assistant", ()), "audio")
     samples = np.sin(np.arange(500_000, dtype=np.float32) / 30)

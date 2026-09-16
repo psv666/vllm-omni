@@ -10,8 +10,8 @@ from typing import Any
 
 from starlette.websockets import WebSocketDisconnect
 
-from vllm_omni.entrypoints.realtime.contracts import RealtimeError, SessionConfig
-from vllm_omni.entrypoints.realtime.runtime import RealtimeRuntime
+from vllm_omni.entrypoints.openai.realtime.contracts import RealtimeError, SessionConfig
+from vllm_omni.entrypoints.openai.realtime.runtime import RealtimeRuntime
 
 from .codec import decode_event
 from .events import GAEventEncoder, error_event, event

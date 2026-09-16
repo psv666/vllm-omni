@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 """Select a transport before allocating any connection/session state."""
 
-from vllm_omni.entrypoints.realtime.contracts import RealtimeError
+from vllm_omni.entrypoints.openai.realtime.contracts import RealtimeError
 
 PROFILES = ("qwen3-legacy", "openai-realtime")
 

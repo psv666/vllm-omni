@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pybase64 as base64
 
-from vllm_omni.entrypoints.realtime.contracts import Content, Response, RuntimeEvent, new_id
+from vllm_omni.entrypoints.openai.realtime.contracts import Content, Response, RuntimeEvent, new_id
 from vllm_omni.utils.audio_resample import StreamingAudioResampler
 
 from .codec import encode_item, session_config

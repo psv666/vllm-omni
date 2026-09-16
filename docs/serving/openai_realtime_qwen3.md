@@ -218,10 +218,13 @@ explicit `duplex=1&profile=...` is rejected; the two protocols cannot be
 combined. An unsupported duplex request fails without falling back to Qwen.
 Native MiniCPM duplex selection and `/v1/duplex` stay separate.
 
-`entrypoints/realtime/` owns the conversation store, input snapshot, response
-task, cancellation, visual selection, and Qwen model execution.
-`entrypoints/openai/realtime/` validates GA messages and translates runtime
-events to WebSocket messages. Neither imports the MiniCPM duplex runtime.
+All Realtime components live under `entrypoints/openai/realtime/`.
+`session.py` and `runtime.py` own the conversation store, input snapshot,
+response task, and cancellation; `qwen3.py` adapts turns to Qwen model execution.
+`codec.py`, `events.py`, and `connection.py` handle GA messages and WebSocket I/O.
+The session/runtime modules do not import these transport modules or the
+MiniCPM duplex runtime. The parent OpenAI package loads its public serving
+exports lazily so importing the runtime does not initialize the API server.
 The legacy video shim shares the conversation store and response runtime,
 while retaining its original audio format, context policy, and frame
 acknowledgements. Closing either connection releases its session state.

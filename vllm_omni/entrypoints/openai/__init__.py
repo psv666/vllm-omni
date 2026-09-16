@@ -1,26 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+"""OpenAI-compatible API entrypoints, with lazy public serving exports."""
 
-"""
-OpenAI-compatible API entrypoints for vLLM-Omni.
 
-Provides:
-- omni_run_server: Main server entry point (auto-detects model type)
-- OmniOpenAIServingChat: Unified chat completion handler for both LLM and diffusion models
-"""
+def __getattr__(name: str):
+    # Importing a session/runtime module must not initialize the API server,
+    # its WebSocket transports, or the unrelated duplex serving stack.
+    if name in {"build_async_omni", "omni_init_app_state", "omni_run_server"}:
+        from vllm_omni.entrypoints.openai import api_server
 
-from vllm_omni.entrypoints.openai.api_server import (
-    build_async_omni,
-    omni_init_app_state,
-    omni_run_server,
-)
-from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
+        return getattr(api_server, name)
+    if name == "OmniOpenAIServingChat":
+        from vllm_omni.entrypoints.openai.serving_chat import OmniOpenAIServingChat
+
+        return OmniOpenAIServingChat
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    # Server functions
     "omni_run_server",
     "build_async_omni",
     "omni_init_app_state",
-    # Serving classes
     "OmniOpenAIServingChat",
 ]

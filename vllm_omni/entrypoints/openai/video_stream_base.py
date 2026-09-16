@@ -47,14 +47,14 @@ from pydantic import BaseModel, Field, ValidationError
 from vllm.logger import init_logger
 
 from vllm_omni.entrypoints.openai import video_stream_envs
+from vllm_omni.entrypoints.openai.realtime.contracts import CancelResponse, Content, CreateResponse, Item
+from vllm_omni.entrypoints.openai.realtime.legacy import HistoryView, LegacySession
+from vllm_omni.entrypoints.openai.realtime.qwen3 import Qwen3RealtimeAdapter
+from vllm_omni.entrypoints.openai.realtime.video import sample_frame_indices
 from vllm_omni.entrypoints.openai.video_frame_filter import FrameSimilarityFilter
 from vllm_omni.entrypoints.openai.video_stream_context import (
     text_only_message,
 )
-from vllm_omni.entrypoints.realtime.contracts import CancelResponse, Content, CreateResponse, Item
-from vllm_omni.entrypoints.realtime.legacy import HistoryView, LegacySession
-from vllm_omni.entrypoints.realtime.qwen3 import Qwen3RealtimeAdapter
-from vllm_omni.entrypoints.realtime.video import sample_frame_indices
 from vllm_omni.outputs import OmniRequestOutput
 
 logger = init_logger(__name__)

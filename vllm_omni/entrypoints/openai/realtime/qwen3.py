@@ -17,7 +17,7 @@ import numpy as np
 import pybase64 as base64
 from vllm.sampling_params import RequestOutputKind
 
-from vllm_omni.entrypoints.realtime.video import FrameSimilarityFilter, sample_frame_indices
+from vllm_omni.entrypoints.openai.realtime.video import FrameSimilarityFilter, sample_frame_indices
 from vllm_omni.entrypoints.utils import coerce_param_message_types
 from vllm_omni.outputs import OmniRequestOutput
 

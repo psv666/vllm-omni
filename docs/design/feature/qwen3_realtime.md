@@ -3,6 +3,18 @@
 The Qwen3 GA profile is a turn-based frontend over AsyncOmni. It does not
 require persistent model-side sessions or cross-turn KV-cache reuse.
 
+## Code layout
+
+All components live under `vllm_omni/entrypoints/openai/realtime/`:
+
+- `contracts.py`, `session.py`, and `runtime.py`: conversation state and response execution.
+- `qwen3.py`, `legacy.py`, and `video.py`: model adaptation and legacy video support.
+- `codec.py`, `events.py`, `connection.py`, and `routing.py`: GA protocol and connection handling.
+
+Transport code calls the shared runtime; the runtime does not import transport
+modules. The parent OpenAI package exposes its serving objects lazily to
+preserve this import boundary within the common directory.
+
 ## Request path
 
 ~~~text

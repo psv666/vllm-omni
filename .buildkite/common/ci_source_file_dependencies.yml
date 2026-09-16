@@ -178,7 +178,6 @@ source_file_dependencies:
   # --- omni / tts jobs ---
   omni_qwen3_omni_function:
     - *qwen3_omni
-    - vllm_omni/entrypoints/realtime/
     - vllm_omni/entrypoints/openai/realtime/
     - vllm_omni/entrypoints/openai/api_server.py
     - vllm_omni/entrypoints/openai/video_stream_base.py

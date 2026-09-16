@@ -1113,7 +1113,7 @@ async def omni_init_app_state(
     )
 
     if qwen_ga_available and state.openai_serving_chat is not None:
-        from vllm_omni.entrypoints.realtime.qwen3 import Qwen3RealtimeAdapter
+        from vllm_omni.entrypoints.openai.realtime.qwen3 import Qwen3RealtimeAdapter
 
         state.openai_serving_realtime_ga = Qwen3RealtimeAdapter(state.openai_serving_chat, engine_client)
 
@@ -1635,8 +1635,8 @@ async def streaming_video_output(websocket: WebSocket):
 @router.websocket("/v1/realtime")
 async def realtime_websocket(websocket: WebSocket):
     """WebSocket endpoint for OpenAI-style realtime interactions."""
+    from vllm_omni.entrypoints.openai.realtime.contracts import RealtimeError
     from vllm_omni.entrypoints.openai.realtime.routing import select_realtime_route
-    from vllm_omni.entrypoints.realtime.contracts import RealtimeError
 
     state = websocket.app.state
     duplex_handler = getattr(state, "openai_serving_duplex", None)
@@ -1703,7 +1703,7 @@ async def _wait_for_duplex_warmup(websocket: WebSocket) -> None:
 async def duplex_websocket(websocket: WebSocket):
     """Alias of ``/v1/realtime?duplex=1``: the same Realtime duplex session protocol."""
     if websocket.query_params.get("profile") is not None:
-        from vllm_omni.entrypoints.realtime.contracts import RealtimeError
+        from vllm_omni.entrypoints.openai.realtime.contracts import RealtimeError
 
         await _reject_realtime_connection(
             websocket,

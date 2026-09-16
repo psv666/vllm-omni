@@ -8,7 +8,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from vllm_omni.entrypoints.realtime.contracts import (
+from vllm_omni.entrypoints.openai.realtime.contracts import (
     AppendAudio,
     CancelResponse,
     CommitAudio,
@@ -23,8 +23,8 @@ from vllm_omni.entrypoints.realtime.contracts import (
     UpdateSession,
     VisualPolicy,
 )
-from vllm_omni.entrypoints.realtime.runtime import RealtimeRuntime
-from vllm_omni.entrypoints.realtime.session import SessionStore
+from vllm_omni.entrypoints.openai.realtime.runtime import RealtimeRuntime
+from vllm_omni.entrypoints.openai.realtime.session import SessionStore
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 

@@ -18,8 +18,8 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from tests.helpers.serving_chat import build_serving_chat
 from vllm_omni.config.stage_config import StageConfig
-from vllm_omni.entrypoints.realtime.contracts import Content, Item, SessionConfig, TurnSnapshot, VisualPolicy
-from vllm_omni.entrypoints.realtime.qwen3 import Qwen3RealtimeAdapter
+from vllm_omni.entrypoints.openai.realtime.contracts import Content, Item, SessionConfig, TurnSnapshot, VisualPolicy
+from vllm_omni.entrypoints.openai.realtime.qwen3 import Qwen3RealtimeAdapter
 from vllm_omni.outputs import OmniRequestOutput
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
