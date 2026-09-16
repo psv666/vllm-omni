@@ -201,8 +201,9 @@ class OmniServer:
         )
 
         max_wait = 1200
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
+        # System clock corrections must not shorten or extend startup waits.
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < max_wait:
             ret = self.proc.poll()
             if ret is not None:
                 raise RuntimeError(f"Server processes exited with code {ret} before becoming ready.")
@@ -497,8 +498,9 @@ class OmniServerStageCli(OmniServer):
                 self._launch_stage(stage_id, headless=True, replica_id=replica_id)
 
         max_wait = 1200
-        start_time = time.time()
-        while time.time() - start_time < max_wait:
+        # System clock corrections must not shorten or extend startup waits.
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < max_wait:
             self._ensure_stage_processes_alive()
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(1)
