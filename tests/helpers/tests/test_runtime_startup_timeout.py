@@ -20,11 +20,14 @@ def startup_server(request, tmp_path, monkeypatch):
     proc.poll.return_value = None
     monkeypatch.setattr(runtime.subprocess, "Popen", lambda *args, **kwargs: proc)
     if request.param == "server":
-        return runtime.OmniServer("fake-model", [], port=8000)
+        # Exercise the wait-loop clock without reserving or inspecting real ports.
+        monkeypatch.setattr(runtime.OmniServer, "_reserve_port", lambda self: None)
+        monkeypatch.setattr(runtime.OmniServer, "_owns_listening_port", lambda self: True)
+        return runtime.OmniServer("fake-model", [])
 
     config = tmp_path / "stages.yaml"
     config.write_text("stages:\n  - stage_id: 0\n  - stage_id: 1\n")
-    server = runtime.OmniServerStageCli("fake-model", str(config), [], port=8000)
+    server = runtime.OmniServerStageCli("fake-model", str(config), [])
 
     def launch(stage_id, *, headless, replica_id=0):
         server.stage_procs[(stage_id, replica_id)] = proc
@@ -63,7 +66,7 @@ def test_startup_deadline_ignores_wall_clock_changes(startup_server, monkeypatch
         if first_probe_at is None:
             first_probe_at = elapsed
         # Even a backwards clock correction must not extend the deadline.
-        assert elapsed - first_probe_at < 1200, "startup exceeded its elapsed-time budget"
+        assert elapsed - first_probe_at < runtime.SERVER_STARTUP_TIMEOUT_S, "startup exceeded its elapsed-time budget"
         probes += 1
         if probes == 1:
             wall_offset += wall_clock_jump
@@ -81,7 +84,7 @@ def test_startup_deadline_ignores_wall_clock_changes(startup_server, monkeypatch
         assert first_probe_at is not None
         assert elapsed - first_probe_at == 2
     else:
-        with pytest.raises(RuntimeError, match="failed to start within 1200 seconds"):
+        with pytest.raises(RuntimeError, match=f"failed to start within {runtime.SERVER_STARTUP_TIMEOUT_S} seconds"):
             startup_server._start_server()
         assert first_probe_at is not None
-        assert elapsed - first_probe_at == 1200
+        assert elapsed - first_probe_at == runtime.SERVER_STARTUP_TIMEOUT_S

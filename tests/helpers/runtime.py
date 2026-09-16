@@ -38,6 +38,8 @@ from vllm_omni.outputs import OmniRequestOutput
 
 logger = init_logger(__name__)
 
+SERVER_STARTUP_TIMEOUT_S = 1200
+
 PromptAudioInput = list[tuple[Any, int]] | tuple[Any, int] | None
 PromptImageInput = list[Any] | Any | None
 PromptVideoInput = list[Any] | Any | None
@@ -246,7 +248,7 @@ class OmniServer:
             cwd=_omni_subprocess_cwd(),
         )
 
-        max_wait = 1200
+        max_wait = SERVER_STARTUP_TIMEOUT_S
         # System clock corrections must not shorten or extend startup waits.
         start_time = time.monotonic()
         while time.monotonic() - start_time < max_wait:
@@ -551,7 +553,7 @@ class OmniServerStageCli(OmniServer):
             for replica_id in range(self.stage_replica_counts.get(stage_id, 1)):
                 self._launch_stage(stage_id, headless=True, replica_id=replica_id)
 
-        max_wait = 1200
+        max_wait = SERVER_STARTUP_TIMEOUT_S
         # System clock corrections must not shorten or extend startup waits.
         start_time = time.monotonic()
         while time.monotonic() - start_time < max_wait:
