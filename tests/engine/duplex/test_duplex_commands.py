@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
-"""OpenAI Realtime client events -> typed ``DuplexCommand`` objects and their mailbox payloads."""
+"""OpenAI Realtime client events -> typed ``RealtimeCommand`` objects and internal handler payloads."""
 
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ import base64
 import numpy as np
 import pytest
 
-from vllm_omni.engine.duplex.commands import (
-    REALTIME_COMMAND_TYPES,
+from vllm_omni.engine.duplex.command_decoder import decode_command
+from vllm_omni.engine.duplex.command_payload import to_internal_payload
+from vllm_omni.protocol.duplex import RealtimeInputDefaults
+from vllm_omni.protocol.duplex import commands as command_types
+from vllm_omni.protocol.duplex.commands import (
     AckPlayback,
     AppendAudio,
     AppendText,
@@ -25,18 +28,13 @@ from vllm_omni.engine.duplex.commands import (
     CreateItem,
     CreateResponse,
     DeleteItem,
-    DuplexCommand,
-    DuplexCommandError,
     Heartbeat,
+    RealtimeCommand,
     SignalTurn,
     TruncateItem,
     UpdateSession,
-    command_from_realtime,
 )
-from vllm_omni.engine.duplex.realtime_commands import (
-    RealtimeInputDefaults,
-    translate_realtime_command,
-)
+from vllm_omni.protocol.duplex.errors import RealtimeProtocolError
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -44,7 +42,7 @@ _LOUD_PCM16 = base64.b64encode(b"\x00\x10" * 8).decode("ascii")
 _SILENT_PCM16 = base64.b64encode(b"\x00\x00" * 8).decode("ascii")
 _JPEG_FRAME = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 12).decode("ascii")
 
-_MINIMAL_PAYLOADS: dict[str, tuple[dict[str, object], type[DuplexCommand]]] = {
+_MINIMAL_PAYLOADS: dict[str, tuple[dict[str, object], type[RealtimeCommand]]] = {
     "input_audio_buffer.append": ({"audio": _LOUD_PCM16}, AppendAudio),
     "input_audio_buffer.commit": ({}, Commit),
     "input_audio_buffer.clear": ({}, ClearInput),
@@ -66,25 +64,22 @@ _MINIMAL_PAYLOADS: dict[str, tuple[dict[str, object], type[DuplexCommand]]] = {
 
 
 def test_every_realtime_command_type_has_a_mapping_case():
-    assert set(_MINIMAL_PAYLOADS) == set(REALTIME_COMMAND_TYPES)
+    wire_types = {wire_type for name in command_types.__all__ if (wire_type := getattr(command_types, name).wire_type)}
+    assert set(_MINIMAL_PAYLOADS) == wire_types
 
 
-@pytest.mark.parametrize("event_type", sorted(REALTIME_COMMAND_TYPES))
-def test_command_from_realtime_maps_each_type_to_its_dataclass_and_propagates_event_id(event_type: str):
+@pytest.mark.parametrize("event_type", sorted(_MINIMAL_PAYLOADS))
+def test_decode_command_maps_each_type_to_its_dataclass_and_propagates_event_id(event_type: str):
     body, expected_cls = _MINIMAL_PAYLOADS[event_type]
 
-    command = command_from_realtime({"type": event_type, "event_id": f"evt-{event_type}", **body})
+    command = decode_command({"type": event_type, "event_id": f"evt-{event_type}", **body})
 
     assert type(command) is expected_cls
     assert command.event_id == f"evt-{event_type}"
-    payload = command.payload()
-    assert payload["type"] == expected_cls.type
-    assert payload["realtime_event_id"] == f"evt-{event_type}"
-    assert "event_id" not in payload
+    assert command.wire_type == event_type
 
-    anonymous = command_from_realtime({"type": event_type, **body})
+    anonymous = decode_command({"type": event_type, **body})
     assert anonymous.event_id is None
-    assert "realtime_event_id" not in anonymous.payload()
 
 
 @pytest.mark.parametrize(
@@ -100,13 +95,13 @@ def test_command_from_realtime_maps_each_type_to_its_dataclass_and_propagates_ev
     ],
 )
 def test_pre_realtime_client_event_aliases_map_to_their_canonical_command(
-    alias: str, expected_cls: type[DuplexCommand], body: dict[str, object]
+    alias: str, expected_cls: type[RealtimeCommand], body: dict[str, object]
 ):
-    assert type(command_from_realtime({"type": alias, **body})) is expected_cls
+    assert type(decode_command({"type": alias, **body})) is expected_cls
 
 
 def test_append_audio_decodes_and_converts_pcm16_to_16k_float32():
-    command = command_from_realtime(
+    command = decode_command(
         {"type": "input_audio_buffer.append", "audio": _LOUD_PCM16, "format": "pcm16", "sample_rate_hz": 16000}
     )
 
@@ -127,7 +122,7 @@ def test_append_audio_defaults_come_from_the_session_payload():
     assert defaults.input_audio_format == "pcm16"
     assert defaults.input_sample_rate_hz == 8000
 
-    command = translate_realtime_command({"type": "input_audio_buffer.append", "audio": _LOUD_PCM16}, defaults=defaults)
+    command = decode_command({"type": "input_audio_buffer.append", "audio": _LOUD_PCM16}, defaults=defaults)
 
     assert isinstance(command, AppendAudio)
     assert command.format == "pcm_f32le"
@@ -135,7 +130,7 @@ def test_append_audio_defaults_come_from_the_session_payload():
     assert command.sample_rate_hz == 16000
     assert len(command.audio) > 8 * 4
 
-    passthrough = translate_realtime_command(
+    passthrough = decode_command(
         {"type": "input_audio_buffer.append", "audio": base64.b64encode(np.zeros(4, dtype="<f4").tobytes()).decode()},
         defaults=RealtimeInputDefaults(input_audio_format="pcm_f32le", input_sample_rate_hz=16000),
     )
@@ -144,14 +139,14 @@ def test_append_audio_defaults_come_from_the_session_payload():
 
 
 def test_append_audio_speech_classification_uses_hints_then_rms():
-    silent = command_from_realtime({"type": "input_audio_buffer.append", "audio": _SILENT_PCM16})
+    silent = decode_command({"type": "input_audio_buffer.append", "audio": _SILENT_PCM16})
     assert silent.is_speech is False
 
-    forced = command_from_realtime({"type": "input_audio_buffer.append", "audio": _SILENT_PCM16, "is_speech": True})
+    forced = decode_command({"type": "input_audio_buffer.append", "audio": _SILENT_PCM16, "is_speech": True})
     assert forced.is_speech is True
     assert forced.hints == {"is_speech": True}
 
-    vad = command_from_realtime(
+    vad = decode_command(
         {"type": "input_audio_buffer.append", "audio": _LOUD_PCM16, "vad": {"speech_probability": 0.1}}
     )
     assert vad.is_speech is False
@@ -159,7 +154,7 @@ def test_append_audio_speech_classification_uses_hints_then_rms():
 
 
 def test_append_audio_carries_wire_hints_and_video_frames():
-    command = command_from_realtime(
+    command = decode_command(
         {
             "type": "input_audio_buffer.append",
             "event_id": "evt-append",
@@ -178,7 +173,7 @@ def test_append_audio_carries_wire_hints_and_video_frames():
     assert command.video_frames == (_JPEG_FRAME,)
     assert dict(command.hints) == {"transcript": "hi there", "duration_ms": 1000, "audio_end_ms": 3000}
 
-    payload = command.payload()
+    payload = to_internal_payload(command)
     assert payload["type"] == "input_audio_buffer.append"
     assert payload["realtime_event_id"] == "evt-append"
     assert payload["audio"] == base64.b64encode(command.audio).decode("ascii")
@@ -196,7 +191,7 @@ def test_append_audio_carries_wire_hints_and_video_frames():
 def test_append_audio_payload_re_encodes_bytes_and_flattens_hints():
     command = AppendAudio(audio=b"\x01\x02", hints={"vad": {"is_speech": True}}, is_speech=True)
 
-    assert command.payload() == {
+    assert to_internal_payload(command) == {
         "type": "input_audio_buffer.append",
         "audio": "AQI=",
         "format": "pcm16",
@@ -216,8 +211,8 @@ def test_append_audio_payload_re_encodes_bytes_and_flattens_hints():
     ],
 )
 def test_malformed_append_raises_command_error_with_code(body: dict[str, object], code: str):
-    with pytest.raises(DuplexCommandError) as excinfo:
-        command_from_realtime({"type": "input_audio_buffer.append", "event_id": "evt-bad", **body})
+    with pytest.raises(RealtimeProtocolError) as excinfo:
+        decode_command({"type": "input_audio_buffer.append", "event_id": "evt-bad", **body})
 
     assert excinfo.value.code == code
     assert excinfo.value.event_id == "evt-bad"
@@ -259,74 +254,56 @@ def test_malformed_append_raises_command_error_with_code(body: dict[str, object]
     ],
 )
 def test_malformed_payloads_raise_command_error_with_code(payload: dict[str, object], code: str):
-    with pytest.raises(DuplexCommandError) as excinfo:
-        command_from_realtime({"event_id": "evt-bad", **payload})
+    with pytest.raises(RealtimeProtocolError) as excinfo:
+        decode_command({"event_id": "evt-bad", **payload})
 
     assert excinfo.value.code == code
     assert excinfo.value.event_id == "evt-bad"
 
 
-# ---- payload() rendering ----
+# ---- command fields and internal payload conversion ----
 
 
-def test_commit_maps_create_response_to_response_create():
-    command = command_from_realtime(
+def test_commit_decodes_final_and_response_create():
+    command = decode_command(
         {"type": "input_audio_buffer.commit", "event_id": "evt-commit", "response_create": True, "final": False}
     )
 
     assert command == Commit(event_id="evt-commit", final=False, create_response=True)
-    assert command.payload() == {
-        "type": "input_audio_buffer.commit",
-        "realtime_event_id": "evt-commit",
-        "final": False,
-        "response_create": True,
-    }
-    assert Commit().payload() == {"type": "input_audio_buffer.commit", "final": True}
-    assert Commit(is_speech=False, realtime_item_id="item_1").payload() == {
-        "type": "input_audio_buffer.commit",
-        "final": True,
-        "is_speech": False,
-        "realtime_item_id": "item_1",
-    }
-    assert (
-        command_from_realtime({"type": "input_audio_buffer.commit", "create_response": False}).create_response is False
-    )
+    assert Commit().final is True
+    assert Commit(is_speech=False, realtime_item_id="item_1").is_speech is False
+    assert decode_command({"type": "input_audio_buffer.commit", "create_response": False}).create_response is False
 
 
 def test_create_response_renders_options_as_response_object():
-    command = command_from_realtime({"type": "response.create", "response": {"modalities": ["text"]}})
+    command = decode_command({"type": "response.create", "response": {"modalities": ["text"]}})
 
     assert isinstance(command, CreateResponse)
     assert dict(command.options) == {"modalities": ["text"]}
-    assert command.payload() == {"type": "response.create", "response": {"modalities": ["text"]}}
-    assert command_from_realtime({"type": "response.create"}).payload() == {"type": "response.create", "response": {}}
-
-
-def test_cancel_and_clear_commands_keep_optional_response_id():
-    assert command_from_realtime({"type": "response.cancel", "response_id": ""}).response_id is None
-    cancel = command_from_realtime({"type": "response.cancel", "response_id": "resp_1"})
-    assert cancel == CancelResponse(response_id="resp_1")
-    assert cancel.payload() == {"type": "response.cancel", "response_id": "resp_1"}
-    clear = command_from_realtime({"type": "output_audio_buffer.clear", "response_id": "resp_2"})
-    assert clear == ClearOutputAudio(response_id="resp_2")
-    assert ClearInput().payload() == {"type": "input_audio_buffer.clear"}
-
-
-def test_update_session_renders_as_turn_signal_payload():
-    command = command_from_realtime(
-        {"type": "session.update", "session": {"instructions": "be brief", "voice": "alloy"}}
-    )
-
-    assert command == UpdateSession(patch={"instructions": "be brief", "voice": "alloy"})
-    assert command.payload() == {
-        "type": "turn.signal",
-        "event": "session.update",
-        "payload": {"instructions": "be brief", "voice": "alloy"},
+    assert to_internal_payload(command) == {"type": "response.create", "response": {"modalities": ["text"]}}
+    assert to_internal_payload(decode_command({"type": "response.create"})) == {
+        "type": "response.create",
+        "response": {},
     }
 
 
-def test_create_item_normalizes_item_and_renders_as_turn_signal_payload():
-    command = command_from_realtime(
+def test_cancel_and_clear_commands_keep_optional_response_id():
+    assert decode_command({"type": "response.cancel", "response_id": ""}).response_id is None
+    cancel = decode_command({"type": "response.cancel", "response_id": "resp_1"})
+    assert cancel == CancelResponse(response_id="resp_1")
+    clear = decode_command({"type": "output_audio_buffer.clear", "response_id": "resp_2"})
+    assert clear == ClearOutputAudio(response_id="resp_2")
+    assert decode_command({"type": "input_audio_buffer.clear"}) == ClearInput()
+
+
+def test_update_session_preserves_the_session_patch():
+    command = decode_command({"type": "session.update", "session": {"instructions": "be brief", "voice": "alloy"}})
+
+    assert command == UpdateSession(patch={"instructions": "be brief", "voice": "alloy"})
+
+
+def test_create_item_normalizes_item_and_preserves_previous_id():
+    command = decode_command(
         {
             "type": "conversation.item.create",
             "previous_item_id": "item_0",
@@ -339,33 +316,26 @@ def test_create_item_normalizes_item_and_renders_as_turn_signal_payload():
     assert command.item["id"].startswith("item_")
     assert command.item["object"] == "realtime.item"
     assert command.item["status"] == "completed"
-    payload = command.payload()
-    assert payload["type"] == "turn.signal"
-    assert payload["event"] == "conversation.item.create"
-    assert payload["payload"] == {"item": dict(command.item), "previous_item_id": "item_0"}
-    assert "item" not in payload
-    assert "previous_item_id" not in payload
-
-    without_previous = command_from_realtime({"type": "conversation.item.create", "item": {"content": "x"}})
+    without_previous = decode_command({"type": "conversation.item.create", "item": {"content": "x"}})
     assert without_previous.item["role"] == "user"
     assert without_previous.item["content"] == []
-    assert without_previous.payload()["payload"] == {"item": dict(without_previous.item)}
+    assert without_previous.previous_item_id is None
 
 
 def test_delete_and_truncate_render_as_turn_signal_payloads():
-    delete = command_from_realtime({"type": "conversation.item.delete", "item_id": "item_1"})
+    delete = decode_command({"type": "conversation.item.delete", "item_id": "item_1"})
     assert delete == DeleteItem(item_id="item_1")
-    assert delete.payload() == {
+    assert to_internal_payload(delete) == {
         "type": "turn.signal",
         "event": "conversation.item.delete",
         "payload": {"item_id": "item_1"},
     }
 
-    truncate = command_from_realtime(
+    truncate = decode_command(
         {"type": "conversation.item.truncate", "item_id": "item_1", "audio_end_ms": 1500.0, "content_index": 1}
     )
     assert truncate == TruncateItem(item_id="item_1", audio_end_ms=1500, content_index=1)
-    assert truncate.payload() == {
+    assert to_internal_payload(truncate) == {
         "type": "turn.signal",
         "event": "conversation.item.truncate",
         "payload": {"item_id": "item_1", "audio_end_ms": 1500, "content_index": 1},
@@ -373,53 +343,51 @@ def test_delete_and_truncate_render_as_turn_signal_payloads():
 
 
 def test_playback_ack_close_and_text_append_payloads():
-    ack = command_from_realtime(
+    ack = decode_command(
         {"type": "playback.ack", "played_ms": 1200.0, "committed_ms": 1000, "response_id": "resp_1", "item_id": ""}
     )
     assert ack == AckPlayback(played_ms=1200, committed_ms=1000, response_id="resp_1")
-    assert ack.payload() == {
+    assert to_internal_payload(ack) == {
         "type": "playback.ack",
         "played_ms": 1200,
         "committed_ms": 1000,
         "response_id": "resp_1",
     }
 
-    assert command_from_realtime({"type": "session.close"}) == CloseSession(reason="client_close")
-    assert command_from_realtime({"type": "session.close", "reason": "done"}).payload() == {
-        "type": "session.close",
-        "reason": "done",
-    }
-    assert command_from_realtime({"type": "input.text.append", "text": "hello"}).payload() == {
-        "type": "input.text.append",
-        "text": "hello",
-    }
-    assert Heartbeat().payload() == {"type": "session.heartbeat"}
+    assert decode_command({"type": "session.close"}) == CloseSession(reason="client_close")
+    assert decode_command({"type": "session.close", "reason": "done"}) == CloseSession(reason="done")
+    assert decode_command({"type": "input.text.append", "text": "hello"}) == AppendText(text="hello")
+    assert decode_command({"type": "session.heartbeat"}) == Heartbeat()
 
 
 def test_turn_signal_renders_payload_only_when_present_and_dispatches_known_events():
-    signal = command_from_realtime({"type": "turn.signal", "event": "user_started", "payload": {"source": "client"}})
+    signal = decode_command({"type": "turn.signal", "event": "user_started", "payload": {"source": "client"}})
     assert signal == SignalTurn(event="user_started", signal_payload={"source": "client"})
-    assert signal.payload() == {"type": "turn.signal", "event": "user_started", "payload": {"source": "client"}}
-    assert command_from_realtime({"type": "turn.signal", "event": "user_started"}).payload() == {
+    assert to_internal_payload(signal) == {
+        "type": "turn.signal",
+        "event": "user_started",
+        "payload": {"source": "client"},
+    }
+    assert to_internal_payload(decode_command({"type": "turn.signal", "event": "user_started"})) == {
         "type": "turn.signal",
         "event": "user_started",
     }
 
-    assert command_from_realtime({"type": "turn.signal", "event": "barge_in"}) == BargeIn()
-    assert command_from_realtime({"type": "turn.signal", "event": "input.cancel"}) == CancelInput()
-    assert command_from_realtime(
+    assert decode_command({"type": "turn.signal", "event": "barge_in"}) == BargeIn()
+    assert decode_command({"type": "turn.signal", "event": "input.cancel"}) == CancelInput()
+    assert decode_command(
         {"type": "turn.signal", "event": "response.cancel", "payload": {"response_id": "resp_1"}}
     ) == CancelResponse(response_id="resp_1")
-    assert command_from_realtime(
+    assert decode_command(
         {"type": "turn.signal", "event": "session.update", "payload": {"voice": "alloy"}}
     ) == UpdateSession(patch={"voice": "alloy"})
-    assert command_from_realtime(
+    assert decode_command(
         {"type": "turn.signal", "event": "conversation.item.delete", "payload": {"item_id": "item_1"}}
     ) == DeleteItem(item_id="item_1")
-    assert command_from_realtime(
+    assert decode_command(
         {"type": "turn.signal", "event": "conversation.item.truncate", "payload": {"item_id": "i", "audio_end_ms": 5}}
     ) == TruncateItem(item_id="i", audio_end_ms=5)
-    created = command_from_realtime(
+    created = decode_command(
         {"type": "turn.signal", "event": "conversation.item.create", "payload": {"item": {"role": "system"}}}
     )
     assert isinstance(created, CreateItem)
@@ -440,7 +408,7 @@ def test_raw_wire_hints_cannot_override_the_normalized_typed_fields():
         hints={"is_speech": 0, "rms": 0.001},
     )
 
-    payload = command.payload()
+    payload = to_internal_payload(command)
 
     assert payload["is_speech"] is False, "the normalized field wins over the raw hint"
     assert payload["rms"] == 0.001, "a hint with no typed counterpart still comes through"
@@ -450,4 +418,18 @@ def test_a_hint_survives_when_its_typed_field_is_unset():
     """Unset typed fields are absent from the payload, so the hint is the only value."""
     command = AppendAudio(audio=b"\x00\x00" * 8, hints={"is_speech": True})
 
-    assert command.payload()["is_speech"] is True
+    assert to_internal_payload(command)["is_speech"] is True
+
+
+@pytest.mark.parametrize("command", [CancelInput(event_id="cancel"), BargeIn(event_id="barge")])
+def test_internal_cancel_payload_preserves_event_correlation(command):
+    assert to_internal_payload(command) == {"type": command.wire_type, "realtime_event_id": command.event_id}
+
+
+@pytest.mark.parametrize("event_id", [None, "", "client_1"])
+def test_internal_payload_uses_client_correlation_field(event_id):
+    command = DeleteItem(item_id="item_1", event_id=event_id)
+    expected = {"type": "turn.signal", "event": "conversation.item.delete", "payload": {"item_id": "item_1"}}
+    if event_id is not None:
+        expected["realtime_event_id"] = event_id
+    assert to_internal_payload(command) == expected

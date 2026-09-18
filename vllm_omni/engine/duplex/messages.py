@@ -5,7 +5,7 @@
 
 Sessions live inside the engine (``DuplexSessionRunner`` on the orchestrator
 loop). The API layer only opens/closes/resumes/touches sessions through
-correlated RPC and pushes ``DuplexCommand`` objects one-way; every session
+correlated RPC and pushes ``RealtimeCommand`` objects one-way; every session
 output travels back as a ``DuplexSessionEventMessage``.
 """
 
@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, Literal
 from vllm_omni.engine.messages import EngineQueueMessage
 
 if TYPE_CHECKING:
-    from vllm_omni.engine.duplex.commands import DuplexCommand
     from vllm_omni.engine.duplex.config import DuplexCapabilities, DuplexSessionConfig
-    from vllm_omni.engine.duplex.events import DuplexEvent
+    from vllm_omni.protocol.duplex.commands import RealtimeCommand
+    from vllm_omni.protocol.duplex.events import DuplexEvent
 
 
 class DuplexSessionError(RuntimeError):
@@ -72,7 +72,7 @@ class DuplexSessionCommandMessage(EngineQueueMessage, kw_only=True):
 
     type: Literal["duplex_session_command"] = "duplex_session_command"
     session_id: str
-    command: DuplexCommand
+    command: RealtimeCommand
 
 
 class DuplexControlResultMessage(EngineQueueMessage, kw_only=True):

@@ -91,12 +91,13 @@ class InlineDuplexClient(DuplexClientBase):
             return
         # Lazy import keeps ``vllm_omni.clients`` free of runtime imports at
         # module load; the caller already holds a live DuplexOmni.
-        from vllm_omni.engine.duplex.commands import DuplexCommandError, command_from_realtime
-        from vllm_omni.engine.duplex.events import error_event
+        from vllm_omni.engine.duplex.command_decoder import decode_command
+        from vllm_omni.protocol.duplex.errors import RealtimeProtocolError
+        from vllm_omni.protocol.duplex.events import error_event
 
         try:
-            command = command_from_realtime(payload, defaults=self._input_defaults())
-        except DuplexCommandError as exc:
+            command = decode_command(payload, defaults=self._input_defaults())
+        except RealtimeProtocolError as exc:
             await self._dispatch(
                 error_event(exc.code, str(exc), event_id=exc.event_id or payload.get("event_id")).to_realtime()
             )

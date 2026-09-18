@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from vllm_omni.protocol.realtime.errors import RealtimeProtocolError
 
-__all__ = ["REALTIME_ERROR_TYPES_BY_CODE", "RealtimeProtocolError", "realtime_error_type"]
+__all__ = ["REALTIME_ERROR_TYPES_BY_CODE", "RealtimeProtocolError"]
 
 
 #: OpenAI Realtime ``error.type`` for each internal error code.
@@ -68,8 +68,3 @@ REALTIME_ERROR_TYPES_BY_CODE: dict[str, str] = {
     "invalid_function_call_output": "invalid_request_error",
     "server_vad_unavailable": "server_error",
 }
-
-
-def realtime_error_type(code: str) -> str:
-    """The OpenAI ``error.type`` bucket for an internal error code."""
-    return REALTIME_ERROR_TYPES_BY_CODE.get(code, "invalid_request_error")

@@ -355,10 +355,7 @@ class DuplexSessionConfig:
         ``realtime_*`` keys of ``extra_body`` exactly like the old
         ``_session_create_from_realtime``.
         """
-        from vllm_omni.engine.duplex.realtime_commands import (
-            DUPLEX_REALTIME_CAPABILITIES,
-            duplex_response_format,
-        )
+        from vllm_omni.engine.duplex.command_decoder import DUPLEX_REALTIME_CAPABILITIES, duplex_response_format
         from vllm_omni.engine.duplex.turn_detection import normalize_turn_detection_session_payload
         from vllm_omni.protocol.duplex import (
             RealtimeInputDefaults,
@@ -371,7 +368,7 @@ class DuplexSessionConfig:
 
         payload: dict[str, object] = dict(session_payload)
         # One session check for every consumer (ENTRY-INV-002): the same
-        # capability object ``translate_realtime_command`` uses, so a session
+        # capability object ``decode_command`` uses, so a session
         # object is accepted or refused identically whichever door it came in.
         rejection = validate_session_payload(payload, capabilities=DUPLEX_REALTIME_CAPABILITIES)
         if rejection is not None:
@@ -463,7 +460,7 @@ class DuplexSessionConfig:
         when the patch changes something a live session cannot change.
         ``audio_started`` is ``playback.generated_ms > 0 or playback.sent_ms > 0``.
         """
-        from vllm_omni.engine.duplex.realtime_commands import duplex_response_format
+        from vllm_omni.engine.duplex.command_decoder import duplex_response_format
         from vllm_omni.protocol.duplex import (
             REALTIME_OUTPUT_AUDIO_FORMATS,
             input_audio_transcription_config,
@@ -646,10 +643,11 @@ class ResponseCreateOptions:
         for options a model-native duplex session cannot apply per response.
         Private runtime keys in ``extra_body`` are dropped.
         """
-        from vllm_omni.engine.duplex.realtime_commands import duplex_response_format
+        from vllm_omni.engine.duplex.command_decoder import duplex_response_format
         from vllm_omni.protocol.duplex import (
             REALTIME_OUTPUT_AUDIO_FORMATS,
             parse_realtime_audio_format,
+            realtime_max_output_tokens,
         )
 
         payload: dict[str, object] = dict(response_payload)
@@ -799,20 +797,6 @@ def realtime_item_to_history_message(item: object) -> dict[str, object] | None:
     return None
 
 
-def realtime_max_output_tokens(value: object) -> int | None:
-    """Normalize Realtime max output tokens (``"inf"`` -> ``None``)."""
-    from vllm_omni.protocol.duplex import realtime_max_output_tokens as _impl
-
-    return _impl(value)
-
-
-def input_audio_transcription_config(session_payload: Mapping[str, object]) -> dict[str, object] | None:
-    """Return the ``input_audio_transcription`` object of a Realtime session payload."""
-    from vllm_omni.protocol.duplex import input_audio_transcription_config as _impl
-
-    return _impl(session_payload)
-
-
 __all__ = [
     "DuplexAssistantAudioTextMark",
     "DuplexAudioChunk",
@@ -828,7 +812,5 @@ __all__ = [
     "DuplexTurnEventType",
     "DuplexTurnState",
     "ResponseCreateOptions",
-    "input_audio_transcription_config",
     "realtime_item_to_history_message",
-    "realtime_max_output_tokens",
 ]

@@ -7,15 +7,9 @@ The layering is a chain::
 
     protocol.realtime  <-  protocol.duplex  <-  engine / entrypoints / clients
 
-The middle link only earns its keep if the last arrow is the *only* one. If the
-engine may also reach past it straight into ``protocol.realtime``, then giving a
-Tier 1 helper a duplex-specific version later means touching every call site
-instead of one file --- which is exactly the change
-``convert_input_audio_with_rate`` is expected to need (it resamples to
-MiniCPM-o's 16 kHz, not the client's rate).
-
-So this asserts two things: nobody skips the middle link, and the middle link is
-complete enough that nobody has to.
+The source check prevents duplex consumers from bypassing their protocol
+vocabulary. Identity and subclass checks ensure that shared types are reused.
+Re-exporting a helper does not override dependencies inside that helper.
 """
 
 from __future__ import annotations
@@ -71,34 +65,6 @@ def test_a_duplex_consumer_does_not_skip_the_duplex_protocol_package(module: Pat
     )
 
 
-def test_the_duplex_package_carries_the_whole_command_vocabulary() -> None:
-    from vllm_omni.engine.duplex import commands as engine_commands
-    from vllm_omni.protocol.duplex import commands as duplex_wire
-
-    # Every command the engine handles is nameable through the one door.
-    engine_names = {
-        name
-        for name in engine_commands.__all__
-        if isinstance(getattr(engine_commands, name), type)
-        and issubclass(getattr(engine_commands, name), engine_commands.DuplexCommand)
-        and getattr(engine_commands, name) is not engine_commands.DuplexCommand
-    }
-    assert engine_names <= set(duplex_wire.__all__)
-
-
-def test_the_duplex_package_carries_the_whole_event_vocabulary() -> None:
-    from vllm_omni.engine.duplex import events as engine_events
-    from vllm_omni.protocol.duplex import events as duplex_wire
-
-    engine_names = {
-        name
-        for name in engine_events.__all__
-        if isinstance(getattr(engine_events, name), type)
-        and issubclass(getattr(engine_events, name), engine_events.DuplexEvent)
-    }
-    assert engine_names <= set(duplex_wire.__all__)
-
-
 @pytest.mark.parametrize(
     "module_pair",
     [("events", "events"), ("commands", "commands")],
@@ -122,23 +88,3 @@ def test_a_reexported_tier1_name_is_the_tier1_object(module_pair: tuple[str, str
         assert isinstance(duplex_obj, type) and issubclass(duplex_obj, realtime_obj), (
             f"{name} in protocol.duplex is neither the Tier 1 object nor a subclass of it"
         )
-
-
-def test_duplex_event_is_an_alias_but_duplex_command_is_not() -> None:
-    """The asymmetry is deliberate, and a later reader should not 'fix' it.
-
-    An event has no engine-internal half --- what the session emits is what the
-    socket sends --- so ``DuplexEvent`` is simply ``RealtimeEvent``. A command
-    does: ``payload()`` renders the session runner's mailbox dictionary, and for
-    four of the seventeen the mailbox channel is not even the client event type.
-    """
-    from vllm_omni.engine.duplex.commands import DuplexCommand
-    from vllm_omni.protocol.duplex.events import DuplexEvent
-    from vllm_omni.protocol.realtime.commands import RealtimeCommand
-    from vllm_omni.protocol.realtime.events import RealtimeEvent
-
-    assert DuplexEvent is RealtimeEvent
-
-    assert DuplexCommand is not RealtimeCommand
-    assert issubclass(DuplexCommand, RealtimeCommand)
-    assert hasattr(DuplexCommand, "payload") and not hasattr(RealtimeCommand, "payload")

@@ -92,8 +92,8 @@ import vllm_omni.entrypoints.duplex_omni
 import vllm_omni.entrypoints.duplex.serving
 
 expected_eager = (
-    "vllm_omni.engine.duplex.commands",
-    "vllm_omni.engine.duplex.events",
+    "vllm_omni.protocol.duplex.commands",
+    "vllm_omni.protocol.duplex.events",
     "vllm_omni.engine.duplex.session.engine_session",
     "vllm_omni.engine.duplex.session.manager",
     "vllm_omni.engine.duplex.plugin",
@@ -220,14 +220,18 @@ def test_runtime_package_does_not_bundle_the_browser_demo() -> None:
     assert not (REPO_ROOT / "vllm_omni" / "experimental" / "fullduplex" / "web").exists()
 
 
-def test_engine_duplex_uses_canonical_contract_module_names() -> None:
+def test_duplex_contracts_and_runtime_use_canonical_modules() -> None:
     engine_dir = REPO_ROOT / "vllm_omni" / "engine" / "duplex"
     core_dir = REPO_ROOT / "vllm_omni" / "experimental" / "fullduplex" / "core"
 
+    protocol_dir = REPO_ROOT / "vllm_omni" / "protocol" / "duplex"
+    for name in ("commands.py", "events.py"):
+        assert (protocol_dir / name).is_file()
+
     for name in (
-        "commands.py",
+        "command_decoder.py",
+        "session_projection.py",
         "contracts.py",
-        "events.py",
         "messages.py",
         "plugin.py",
         "intermediate.py",
@@ -249,7 +253,16 @@ def test_engine_duplex_uses_canonical_contract_module_names() -> None:
     ):
         assert (engine_dir / "session" / name).is_file()
     assert not (engine_dir / "session.py").exists()
-    for removed in ("control_plane.py", "control_client.py", "runtime.py"):
+    for removed in (
+        "control_plane.py",
+        "control_client.py",
+        "runtime.py",
+        "commands.py",
+        "events.py",
+        "audio.py",
+        "realtime_commands.py",
+        "realtime_events.py",
+    ):
         assert not (engine_dir / removed).exists()
     # the duplex_ prefix is dropped inside the duplex package
     assert not (engine_dir / "duplex_session.py").exists()

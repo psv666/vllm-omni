@@ -13,7 +13,7 @@ heartbeat, explicit close, generic turn signals) are a separate vocabulary in
 
 Decoding a payload *into* these stays with the consumer, because which command
 a given event becomes can depend on what that consumer supports --- see
-``vllm_omni.engine.duplex.realtime_commands.translate_realtime_command``.
+``vllm_omni.engine.duplex.command_decoder.decode_command``.
 """
 
 from __future__ import annotations
@@ -30,10 +30,9 @@ class RealtimeCommand:
     ``wire_type`` is the event type the client sent; the typed fields are what
     survived decoding, so a consumer reads them instead of re-parsing JSON.
 
-    There is deliberately no rendering method here. A server receives commands,
-    it does not emit them, and how a runtime represents one internally is its
-    own business --- the duplex engine renders its mailbox dictionary in
-    ``vllm_omni.engine.duplex.commands``.
+    A server receives commands; it does not emit them. Runtimes may read these
+    fields directly or convert them to an internal representation. Duplex keeps
+    that conversion in ``vllm_omni.engine.duplex.command_payload``.
     """
 
     #: OpenAI Realtime client event this command decodes from.
@@ -60,7 +59,6 @@ class AppendAudio(RealtimeCommand):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Commit(RealtimeCommand):
     wire_type: ClassVar[str] = "input_audio_buffer.commit"
-    final: bool = True
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

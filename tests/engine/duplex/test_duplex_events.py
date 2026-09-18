@@ -10,9 +10,10 @@ import inspect
 
 import pytest
 
-from vllm_omni.engine.duplex import events as events_module
-from vllm_omni.engine.duplex.events import (
-    REALTIME_ERROR_TYPES_BY_CODE,
+from vllm_omni.engine.duplex.session_projection import RealtimeProjectionState, project_internal_event
+from vllm_omni.protocol.duplex import events as events_module
+from vllm_omni.protocol.duplex.errors import REALTIME_ERROR_TYPES_BY_CODE
+from vllm_omni.protocol.duplex.events import (
     AudioDelta,
     DuplexEvent,
     DuplexRawEvent,
@@ -36,10 +37,6 @@ from vllm_omni.engine.duplex.events import (
     TranscriptDone,
     TurnEvent,
     error_event,
-)
-from vllm_omni.engine.duplex.realtime_events import (
-    RealtimeProjectionState,
-    project_internal_event,
 )
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]

@@ -69,6 +69,8 @@ from vllm_omni.protocol.realtime.events import (
 #: ``tests/protocol/`` stay meaningful.
 DuplexEvent = RealtimeEvent
 
+# Two-argument super is required because dataclass(slots=True) replaces the class.
+
 # ---- Tier 2: OpenAI names carrying vLLM-Omni extensions ----
 
 
@@ -124,10 +126,7 @@ class InputCommitted(realtime_events.InputCommitted):
     details: Mapping[str, object] = field(default_factory=dict)
 
     def _wire_fields(self) -> dict[str, object]:
-        # Explicit parent call, not ``super()``: ``@dataclass(slots=True)``
-        # rebuilds the class, so the zero-argument form's ``__class__`` cell
-        # points at the pre-slots class and is no longer in the MRO.
-        base = realtime_events.__dict__[type(self).__name__]._wire_fields(self)
+        base = super(InputCommitted, self)._wire_fields()
         return {**base, "event": wire_value(self.details)}
 
 
@@ -138,10 +137,7 @@ class ItemDeleted(realtime_events.ItemDeleted):
     details: Mapping[str, object] = field(default_factory=dict)
 
     def _wire_fields(self) -> dict[str, object]:
-        # Explicit parent call, not ``super()``: ``@dataclass(slots=True)``
-        # rebuilds the class, so the zero-argument form's ``__class__`` cell
-        # points at the pre-slots class and is no longer in the MRO.
-        base = realtime_events.__dict__[type(self).__name__]._wire_fields(self)
+        base = super(ItemDeleted, self)._wire_fields()
         return {**base, "event": wire_value(self.details)}
 
 
@@ -152,10 +148,7 @@ class ItemTruncated(realtime_events.ItemTruncated):
     details: Mapping[str, object] = field(default_factory=dict)
 
     def _wire_fields(self) -> dict[str, object]:
-        # Explicit parent call, not ``super()``: ``@dataclass(slots=True)``
-        # rebuilds the class, so the zero-argument form's ``__class__`` cell
-        # points at the pre-slots class and is no longer in the MRO.
-        base = realtime_events.__dict__[type(self).__name__]._wire_fields(self)
+        base = super(ItemTruncated, self)._wire_fields()
         return {**base, "event": wire_value(self.details)}
 
 
@@ -172,12 +165,7 @@ class ErrorEvent(realtime_events.ErrorEvent):
 
     @property
     def error(self) -> dict[str, object]:
-        # Explicit parent call, not ``super()``: ``@dataclass(slots=True)``
-        # rebuilds the class, so the zero-argument form's ``__class__`` cell
-        # points at the pre-slots class and is no longer in the MRO. Reached
-        # through ``__dict__`` because attribute access on the class gives the
-        # getter function, not the ``property`` that owns it.
-        error = dict(realtime_events.ErrorEvent.__dict__["error"].fget(self))
+        error = super(ErrorEvent, self).error
         error.update(cast("Mapping[str, object]", wire_value(self.extra)))
         return error
 

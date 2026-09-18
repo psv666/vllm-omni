@@ -20,19 +20,45 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from vllm_omni.engine.duplex.config import DuplexSessionState
-from vllm_omni.engine.duplex.events import (
-    DOMAIN_TERMINAL_EVENTS,
-    MODEL_OUTPUT_EVENTS,
-    DuplexEvent,
-    error_event,
-)
-from vllm_omni.engine.duplex.realtime_events import (
+from vllm_omni.engine.duplex.session import overlap_policy
+from vllm_omni.engine.duplex.session.context import DuplexSessionContext
+from vllm_omni.engine.duplex.session_projection import (
     RealtimeProjectionState,
     discard_pending_input_audio,
     project_internal_event,
 )
-from vllm_omni.engine.duplex.session import overlap_policy
-from vllm_omni.engine.duplex.session.context import DuplexSessionContext
+from vllm_omni.protocol.duplex.events import DuplexEvent, error_event
+
+# Internal event categories used by the session epoch filter.
+DOMAIN_TERMINAL_EVENTS = frozenset(
+    {
+        "response.done",
+        "response.listen",
+        "audio.cancelled",
+        "input.cancelled",
+        "session.closed",
+    }
+)
+
+MODEL_OUTPUT_EVENTS = frozenset(
+    {
+        "response.created",
+        "response.listen",
+        "response.speak",
+        "response.output_item.added",
+        "response.content_part.added",
+        "response.output_audio.delta",
+        "response.output_audio.done",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.text.delta",
+        "response.text.done",
+        "response.message",
+        "response.output_item.done",
+        "response.content_part.done",
+        "response.done",
+    }
+)
 
 
 class SessionEmitter:

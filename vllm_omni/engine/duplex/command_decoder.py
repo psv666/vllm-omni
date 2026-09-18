@@ -1,26 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
-"""OpenAI Realtime client events -> :class:`DuplexCommand` (stateless).
+"""Decode Realtime client messages into the duplex protocol's typed commands.
 
-This module is the *duplex binding* of the shared Realtime codec. Parsing,
-validating and decoding a client event is not duplex-specific and lives in
-``vllm_omni.protocol.realtime``, reached through ``vllm_omni.protocol.duplex``;
-what lives here is the part that is: which
-:class:`~vllm_omni.engine.duplex.commands.DuplexCommand` a decoded event
-becomes, what the duplex engine can serve
-(:data:`DUPLEX_REALTIME_CAPABILITIES`), and the mapping between a Realtime
-output format and the duplex ``response_format`` vocabulary.
-
-Everything that needs per-session state (input-buffer emptiness for commits,
-response-id fallbacks for cancels, conversation-item lookups, VAD) is resolved
-by the session runner through the helpers on
-:class:`~vllm_omni.engine.duplex.realtime_events.RealtimeProjectionState`;
-the commands produced here carry the raw client intent only.
-
-The shared names re-exported at the bottom are a compatibility surface for
-existing importers. The canonical definitions are in
-``vllm_omni.protocol.realtime`` and there is exactly one of each.
+Shared protocol helpers validate formats, session fields and audio. This module
+selects the command and the capabilities of the duplex engine. Per-session
+checks, such as empty commits and response-id fallback, are resolved by the
+runner through ``session_projection`` after the command has been queued.
 """
 
 from __future__ import annotations
@@ -28,7 +14,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from vllm_omni.engine.duplex.commands import (
+from vllm_omni.protocol.duplex import (
+    RealtimeInputDefaults,
+    RealtimeProtocolCapabilities,
+    RealtimeProtocolError,
+    decode_audio_append,
+    normalize_conversation_item,
+    validate_conversation_item_audio_formats,
+    validate_realtime_response_audio_formats,
+    validate_session_payload,
+)
+from vllm_omni.protocol.duplex.commands import (
     AckPlayback,
     AppendAudio,
     AppendText,
@@ -42,43 +38,11 @@ from vllm_omni.engine.duplex.commands import (
     CreateItem,
     CreateResponse,
     DeleteItem,
-    DuplexCommand,
-    DuplexCommandError,
     Heartbeat,
+    RealtimeCommand,
     SignalTurn,
     TruncateItem,
     UpdateSession,
-)
-from vllm_omni.protocol.duplex import (
-    REALTIME_INPUT_AUDIO_FORMATS,
-    REALTIME_INPUT_HINT_KEYS,
-    REALTIME_OUTPUT_AUDIO_FORMATS,
-    RealtimeInputDefaults,
-    RealtimeProtocolCapabilities,
-    RealtimeProtocolError,
-    apply_realtime_session_defaults,
-    copy_realtime_input_hints,
-    decode_audio_append,
-    input_audio_transcription_config,
-    input_explicitly_non_speech,
-    input_looks_like_speech,
-    input_transcript_from_item,
-    is_supported_realtime_input_format,
-    json_safe_realtime_payload,
-    normalize_conversation_item,
-    parse_realtime_audio_format,
-    realtime_audio_format_object,
-    realtime_max_output_tokens,
-    realtime_output_format,
-    realtime_overlap_fields,
-    text_chars_for_audio_ms_from_marks,
-    truncate_realtime_item_content,
-    validate_conversation_item_audio_formats,
-    validate_realtime_item_truncate,
-    validate_realtime_response_audio_formats,
-    validate_realtime_session_audio_formats,
-    validate_realtime_video_frames,
-    validate_session_payload,
 )
 
 
@@ -121,10 +85,7 @@ def build_append_audio(
     hints_source: Mapping[str, object] | None = None,
 ) -> AppendAudio:
     """Decode one audio append (shared codec) and pack it as the duplex command."""
-    try:
-        decoded = decode_audio_append(event, defaults=defaults, hints_source=hints_source)
-    except RealtimeProtocolError as exc:
-        raise DuplexCommandError(str(exc), code=exc.code, event_id=exc.event_id) from exc
+    decoded = decode_audio_append(event, defaults=defaults, hints_source=hints_source)
     return AppendAudio(
         event_id=decoded.event_id,
         audio=decoded.audio,
@@ -141,14 +102,14 @@ def build_append_audio(
 # ---- translation ----
 
 
-def translate_realtime_command(
+def decode_command(
     payload: Mapping[str, object],
     *,
     defaults: RealtimeInputDefaults | None = None,
-) -> DuplexCommand:
-    """Map one OpenAI Realtime client event onto a :class:`DuplexCommand`.
+) -> RealtimeCommand:
+    """Map one OpenAI Realtime client event onto a :class:`RealtimeCommand`.
 
-    Raises :class:`DuplexCommandError` for malformed or unsupported payloads.
+    Raises :class:`RealtimeProtocolError` for malformed or unsupported payloads.
     ``session.resume`` and ``session.event_ack`` are transport concerns and are
     rejected with ``code="unknown_event"``.
     """
@@ -156,23 +117,23 @@ def translate_realtime_command(
     event_type = payload.get("type")
     event_id = cast("str", payload.get("event_id")) if isinstance(payload.get("event_id"), str) else None
     if not isinstance(event_type, str):
-        raise DuplexCommandError("Duplex event missing string type", code="bad_event", event_id=event_id)
+        raise RealtimeProtocolError("Duplex event missing string type", code="bad_event", event_id=event_id)
 
     if event_type == "session.update":
         session = payload.get("session")
         session_payload: Mapping[str, object] = session if isinstance(session, dict) else payload
         rejection = validate_session_payload(session_payload, capabilities=DUPLEX_REALTIME_CAPABILITIES)
         if rejection is not None:
-            raise DuplexCommandError(rejection.message, code=rejection.code, event_id=event_id)
+            raise RealtimeProtocolError(rejection.message, code=rejection.code, event_id=event_id)
         return UpdateSession(event_id=event_id, patch=dict(session_payload))
 
     if event_type == "conversation.item.create":
         item = payload.get("item")
         format_error = validate_conversation_item_audio_formats(item)
         if format_error is not None:
-            raise DuplexCommandError(format_error, code="unsupported_audio_format", event_id=event_id)
+            raise RealtimeProtocolError(format_error, code="unsupported_audio_format", event_id=event_id)
         if not isinstance(item, dict):
-            raise DuplexCommandError("conversation.item.create requires item", code="bad_event", event_id=event_id)
+            raise RealtimeProtocolError("conversation.item.create requires item", code="bad_event", event_id=event_id)
         previous_item_id = payload.get("previous_item_id")
         return CreateItem(
             event_id=event_id,
@@ -183,7 +144,7 @@ def translate_realtime_command(
     if event_type == "conversation.item.delete":
         item_id = payload.get("item_id")
         if not isinstance(item_id, str) or not item_id:
-            raise DuplexCommandError(
+            raise RealtimeProtocolError(
                 "conversation.item.delete requires item_id", code="missing_item_id", event_id=event_id
             )
         return DeleteItem(event_id=event_id, item_id=item_id)
@@ -193,11 +154,11 @@ def translate_realtime_command(
         audio_end_ms = payload.get("audio_end_ms")
         content_index = payload.get("content_index", 0)
         if not isinstance(item_id, str) or not item_id:
-            raise DuplexCommandError(
+            raise RealtimeProtocolError(
                 "conversation.item.truncate requires item_id", code="missing_item_id", event_id=event_id
             )
         if not isinstance(audio_end_ms, int | float):
-            raise DuplexCommandError(
+            raise RealtimeProtocolError(
                 "conversation.item.truncate requires numeric audio_end_ms", code="bad_event", event_id=event_id
             )
         return TruncateItem(
@@ -247,7 +208,7 @@ def translate_realtime_command(
         if isinstance(response_payload, dict):
             format_error = validate_realtime_response_audio_formats(response_payload)
             if format_error is not None:
-                raise DuplexCommandError(format_error, code="unsupported_audio_format", event_id=event_id)
+                raise RealtimeProtocolError(format_error, code="unsupported_audio_format", event_id=event_id)
         return CreateResponse(
             event_id=event_id,
             options=dict(response_payload) if isinstance(response_payload, dict) else {},
@@ -256,7 +217,7 @@ def translate_realtime_command(
     if event_type in {"playback.ack", "audio.playback_ack"}:
         played_ms = payload.get("played_ms")
         if not isinstance(played_ms, int | float):
-            raise DuplexCommandError("playback.ack requires numeric played_ms", code="bad_event", event_id=event_id)
+            raise RealtimeProtocolError("playback.ack requires numeric played_ms", code="bad_event", event_id=event_id)
         committed_ms = payload.get("committed_ms")
         response_id = payload.get("response_id")
         item_id = payload.get("item_id")
@@ -282,7 +243,7 @@ def translate_realtime_command(
     if event_type in {"input.text.append", "input_text.append", "push_text"}:
         text = payload.get("text")
         if not isinstance(text, str):
-            raise DuplexCommandError("input.text.append requires text", code="bad_event", event_id=event_id)
+            raise RealtimeProtocolError("input.text.append requires text", code="bad_event", event_id=event_id)
         return AppendText(event_id=event_id, text=text)
 
     if event_type == "input.cancel":
@@ -294,7 +255,7 @@ def translate_realtime_command(
     if event_type in {"turn.signal", "signal_turn"}:
         signal_event = payload.get("event")
         if not isinstance(signal_event, str) or not signal_event:
-            raise DuplexCommandError("turn.signal requires event", code="bad_event", event_id=event_id)
+            raise RealtimeProtocolError("turn.signal requires event", code="bad_event", event_id=event_id)
         signal_payload = payload.get("payload")
         signal_payload = dict(signal_payload) if isinstance(signal_payload, dict) else {}
         if signal_event == "input.cancel":
@@ -312,7 +273,9 @@ def translate_realtime_command(
         if signal_event == "conversation.item.create":
             item = signal_payload.get("item")
             if not isinstance(item, dict):
-                raise DuplexCommandError("conversation.item.create requires item", code="bad_event", event_id=event_id)
+                raise RealtimeProtocolError(
+                    "conversation.item.create requires item", code="bad_event", event_id=event_id
+                )
             previous_item_id = signal_payload.get("previous_item_id")
             return CreateItem(
                 event_id=event_id,
@@ -322,7 +285,7 @@ def translate_realtime_command(
         if signal_event == "conversation.item.delete":
             item_id = signal_payload.get("item_id")
             if not isinstance(item_id, str) or not item_id:
-                raise DuplexCommandError(
+                raise RealtimeProtocolError(
                     "conversation.item.delete requires item_id", code="missing_item_id", event_id=event_id
                 )
             return DeleteItem(event_id=event_id, item_id=item_id)
@@ -331,7 +294,7 @@ def translate_realtime_command(
             audio_end_ms = signal_payload.get("audio_end_ms")
             content_index = signal_payload.get("content_index", 0)
             if not isinstance(item_id, str) or not item_id or not isinstance(audio_end_ms, int | float):
-                raise DuplexCommandError(
+                raise RealtimeProtocolError(
                     "conversation.item.truncate requires item_id and numeric audio_end_ms",
                     code="bad_event",
                     event_id=event_id,
@@ -344,39 +307,4 @@ def translate_realtime_command(
             )
         return SignalTurn(event_id=event_id, event=signal_event, signal_payload=signal_payload)
 
-    raise DuplexCommandError(f"Unknown duplex event type: {event_type}", code="unknown_event", event_id=event_id)
-
-
-#: Names this module used to define, re-exported so existing importers keep
-#: working. The canonical definitions live in ``vllm_omni.protocol.realtime``.
-__all__ = [
-    "DUPLEX_REALTIME_CAPABILITIES",
-    "REALTIME_INPUT_AUDIO_FORMATS",
-    "REALTIME_INPUT_HINT_KEYS",
-    "REALTIME_OUTPUT_AUDIO_FORMATS",
-    "RealtimeInputDefaults",
-    "apply_realtime_session_defaults",
-    "build_append_audio",
-    "copy_realtime_input_hints",
-    "duplex_response_format",
-    "input_audio_transcription_config",
-    "input_explicitly_non_speech",
-    "input_looks_like_speech",
-    "input_transcript_from_item",
-    "is_supported_realtime_input_format",
-    "json_safe_realtime_payload",
-    "normalize_conversation_item",
-    "parse_realtime_audio_format",
-    "realtime_audio_format_object",
-    "realtime_max_output_tokens",
-    "realtime_output_format",
-    "realtime_overlap_fields",
-    "text_chars_for_audio_ms_from_marks",
-    "translate_realtime_command",
-    "truncate_realtime_item_content",
-    "validate_conversation_item_audio_formats",
-    "validate_realtime_item_truncate",
-    "validate_realtime_response_audio_formats",
-    "validate_realtime_session_audio_formats",
-    "validate_realtime_video_frames",
-]
+    raise RealtimeProtocolError(f"Unknown duplex event type: {event_type}", code="unknown_event", event_id=event_id)

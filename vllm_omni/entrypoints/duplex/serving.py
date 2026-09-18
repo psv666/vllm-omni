@@ -9,7 +9,7 @@ Everything about a duplex *session* lives inside the engine (see
 * accept the socket and run the Realtime handshake (``session.update`` opens a
   session through ``DuplexOmni.open_session``; ``session.resume`` re-attaches
   to an existing one);
-* translate each client JSON event into a ``DuplexCommand`` and submit it in
+* translate each client JSON event into a ``RealtimeCommand`` and submit it in
   arrival order;
 * pump the session's typed events to the wire, journaling them for resume;
 * manage attachments: resume tokens, replay, takeover, detach on disconnect.
@@ -26,15 +26,6 @@ from dataclasses import dataclass, replace
 from fastapi import WebSocket, WebSocketDisconnect
 from vllm.logger import init_logger
 
-from vllm_omni.engine.duplex.commands import DuplexCommand, DuplexCommandError
-from vllm_omni.engine.duplex.events import (
-    DuplexEvent,
-    SessionClosed,
-    SessionCreated,
-    SessionReplaced,
-    SessionResumed,
-    SessionResyncRequired,
-)
 from vllm_omni.engine.duplex.messages import DuplexSessionError
 from vllm_omni.entrypoints.duplex.realtime_input import RealtimeEnvelope, parse_resume_request
 from vllm_omni.entrypoints.duplex.session_attachment import (
@@ -52,6 +43,16 @@ from vllm_omni.entrypoints.duplex.websocket import (
 )
 from vllm_omni.entrypoints.duplex_omni import DuplexOmni, DuplexSessionHandle
 from vllm_omni.protocol.duplex import RealtimeInputDefaults
+from vllm_omni.protocol.duplex.commands import RealtimeCommand
+from vllm_omni.protocol.duplex.errors import RealtimeProtocolError
+from vllm_omni.protocol.duplex.events import (
+    DuplexEvent,
+    SessionClosed,
+    SessionCreated,
+    SessionReplaced,
+    SessionResumed,
+    SessionResyncRequired,
+)
 
 logger = init_logger(__name__)
 
@@ -503,7 +504,7 @@ class OmniDuplexSessionHandler:
     ) -> None:
         try:
             command = envelope.translate(payload)
-        except DuplexCommandError as exc:
+        except RealtimeProtocolError as exc:
             await send_json(envelope.command_error_payload(exc))
             return
         # ``translate`` folds a session.update's audio settings into the
@@ -515,7 +516,7 @@ class OmniDuplexSessionHandler:
         self,
         attachment: _Attachment,
         envelope: RealtimeEnvelope,
-        command: DuplexCommand,
+        command: RealtimeCommand,
         send_json: SendJson,
     ) -> None:
         try:

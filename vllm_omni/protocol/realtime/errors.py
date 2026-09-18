@@ -26,9 +26,8 @@ class RealtimeProtocolError(ValueError):
 
     ``code`` is the internal error code that :data:`REALTIME_ERROR_TYPES_BY_CODE`
     maps to an OpenAI ``error.type``; ``event_id`` is the *client* event id the
-    error answers. ``vllm_omni.engine.duplex.commands.DuplexCommandError`` is
-    the duplex specialization, so a consumer catching either sees the same
-    three attributes.
+    error answers. Consumers use this exception directly and render the same
+    message, code and event correlation in their error events.
     """
 
     def __init__(self, message: str, *, code: str = "bad_event", event_id: str | None = None) -> None:

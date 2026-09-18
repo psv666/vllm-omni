@@ -259,8 +259,8 @@ resumes and closes them and pipes typed commands in and typed events out
 through a `DuplexSessionHandle`.
 
 ```python
-from vllm_omni.engine.duplex.commands import AppendAudio, Commit
-from vllm_omni.engine.duplex.events import AudioDelta, SessionClosed
+from vllm_omni.protocol.duplex.commands import AppendAudio, Commit
+from vllm_omni.protocol.duplex.events import AudioDelta, SessionClosed
 from vllm_omni.entrypoints.duplex_omni import DuplexOmni
 
 omni = DuplexOmni(model="openbmb/MiniCPM-o-4_5", trust_remote_code=True)
@@ -435,7 +435,7 @@ Semantic divergences hidden behind shared names:
 | Turn-taking | `response.speak`, `response.listen`, `overlap.decision`, `overlap_policy`, `barge_in`, `turn.signal`, `input.cancel`, `input.text.append`, `epoch` / `turn_id` fencing, `force_listen` |
 | Playback truth | `playback.ack` / `playback.acknowledged`, `playback_commit_policy` (`ack_only` \| `commit_all_on_done`), `playback{generated_ms, sent_ms, played_ms, committed_ms}`, `history_committed`, `audio_text_marks` |
 | Model negotiation | `capabilities{implementation_level, supports_input_append, supports_barge_in, supports_session_resume, chunk_period_ms, input_modes, …}`, `ref_audio`, `extra_body` (`auto_response`, `force_listen_count`, `duplex_initial_user_text`) |
-| Diagnostics | `duplex.function_call.done`, the full error-code vocabulary (`REALTIME_ERROR_TYPES_BY_CODE` in `vllm_omni/engine/duplex/events.py`) |
+| Diagnostics | `duplex.function_call.done`, the full error-code vocabulary (`REALTIME_ERROR_TYPES_BY_CODE` in `vllm_omni/protocol/duplex/errors.py`) |
 
 #### Consequences for clients
 
@@ -502,8 +502,8 @@ Every event type the Realtime route accepts or emits, with a worked example in t
 client→server and 42 server→client. Aliases (`input_text.append`,
 `push_text`, `signal_turn`, `audio.playback_ack`, `close_session`, `close`)
 share the payload of their canonical event and are not listed
-separately; the alias table is `translate_realtime_command` in
-`vllm_omni/engine/duplex/realtime_commands.py`. The pre-Realtime WAV-append
+separately; the alias table is `decode_command` in
+`vllm_omni/engine/duplex/command_decoder.py`. The pre-Realtime WAV-append
 aliases `push_chunk` and `input.audio.append` are **not** accepted on this
 route: send `input_audio_buffer.append` with one of the supported input
 formats (`pcm16`, `pcm_s16le`, `s16le`, `pcm_f32le`, `g711_ulaw`,
@@ -1276,21 +1276,21 @@ flat native shape:
 #### Coverage
 
 The examples above cover every event type the Realtime route emits or
-accepts (verified by diffing the `type` literals in
-`vllm_omni/engine/duplex/events.py` and `vllm_omni/engine/duplex/commands.py`
-against this document). Not shown, because they never reach a client
+accepts. Their typed vocabulary is exported by
+`vllm_omni/protocol/duplex/events.py` and `vllm_omni/protocol/duplex/commands.py`.
+Not shown, because they never reach a client
 unprojected: the session-internal events the runner produces
 (`input.committed`, `input.cancelled`, `audio.cancelled`,
 `response.output_audio.delta`, `response.text.delta`, `function_call.done`)
 — their Realtime projections are the examples above (see the name map at the
 end of this section). Every public event is a typed `DuplexEvent` whose
 `to_realtime()` is the wire object; every client event is parsed into a
-typed `DuplexCommand` by `command_from_realtime()`.
+typed `RealtimeCommand` by `decode_command()`.
 
 #### Internal to Realtime name map
 
 The session runner emits these session-internal events; the Realtime
-projector (`vllm_omni/engine/duplex/realtime_events.py`) renames and fans
+projector (`vllm_omni/engine/duplex/session_projection.py`) renames and fans
 them out into typed events before they reach a client.
 
 | Internal event | Realtime projection |
@@ -1340,3 +1340,23 @@ them out into typed events before they reach a client.
   turn-based HTTP routes report "not available" in duplex mode. To use the
   ordinary online serving stack, select `session_mode: turn` as described in
   [Full Duplex](full_duplex_api.md#enable-full-duplex).
+
+## Python import migration after protocol extraction
+
+Import duplex command and event types from `vllm_omni.protocol.duplex.commands`
+and `vllm_omni.protocol.duplex.events`. Audio helpers are exposed through
+`vllm_omni.protocol.duplex`. The former `engine.duplex.commands`,
+`engine.duplex.events`, and `engine.duplex.audio` modules have been removed.
+
+`engine.duplex.realtime_commands` is now `engine.duplex.command_decoder`, with
+`decode_command()` as the input decoding entry point. `RealtimeProtocolError`
+replaces `DuplexCommandError`. `engine.duplex.realtime_events` is now
+`engine.duplex.session_projection`. The `realtime_max_output_tokens` and
+`input_audio_transcription_config` helpers also move from `engine.duplex.config`
+to `protocol.duplex`.
+
+Commands no longer have a `payload()` method. The runner queues protocol command
+objects and reads their fields; handlers that require an internal dictionary use
+`engine.duplex.command_payload.to_internal_payload()`. This conversion supports
+only the command kinds consumed by those handlers. Client wire events and
+session behavior are unchanged by these Python interface changes.

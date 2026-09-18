@@ -31,29 +31,20 @@ re-exports the Tier 1 helper functions. So the layering is a chain, not a mesh::
         |
     duplex engine / entrypoints / clients
 
-``tests/protocol/duplex/test_duplex_protocol_facade.py`` asserts that the last
-arrow is the only one: no duplex consumer imports ``protocol.realtime``
-directly. The payoff is that a helper which later needs a duplex-specific
-version --- ``convert_input_audio_with_rate`` is the standing example, it
-resamples to MiniCPM-o's 16 kHz rather than the client's rate --- is overridden
-in one file instead of at every call site.
+Duplex consumers import this package rather than the Tier 1 package directly.
+The facade centralizes imports; it does not replace dependencies already bound
+inside shared helpers. A consumer-specific conversion must be passed explicitly
+to a helper when that behavior is introduced.
 
-What stays outside
-------------------
-The *mailbox* half of a command does not live here. A duplex command carries
-two different things: the client event it decodes from (wire, this package) and
-the dictionary the session runner consumes (engine). They genuinely differ ---
-``session.update``, ``conversation.item.create`` / ``.delete`` / ``.truncate``
-all travel on the runner's ``turn.signal`` channel --- so ``payload()`` and its
-``type`` stay in ``vllm_omni.engine.duplex.commands``. Events have no such
-half, which is why :data:`~vllm_omni.protocol.duplex.events.DuplexEvent` can be
-a plain alias of ``RealtimeEvent`` while ``DuplexCommand`` cannot.
+Commands here carry decoded client intent. The runner queues these objects and
+reads their fields. Handlers that still consume internal dictionaries use
+``vllm_omni.engine.duplex.command_payload.to_internal_payload``. Session state
+and command resolution stay in the engine.
 """
 
 from vllm_omni.protocol.duplex.errors import (
     REALTIME_ERROR_TYPES_BY_CODE,
     RealtimeProtocolError,
-    realtime_error_type,
 )
 from vllm_omni.protocol.realtime.audio import (
     MAX_INPUT_SAMPLE_RATE_HZ,
@@ -62,7 +53,6 @@ from vllm_omni.protocol.realtime.audio import (
     convert_output_audio,
     decode_g711_alaw,
     decode_g711_ulaw,
-    encode_float32_mono_wav_base64,
     encode_g711_alaw,
     encode_g711_ulaw,
     resample_pcm16_mono,
@@ -129,7 +119,6 @@ __all__ = [
     "decode_audio_append",
     "decode_g711_alaw",
     "decode_g711_ulaw",
-    "encode_float32_mono_wav_base64",
     "encode_g711_alaw",
     "encode_g711_ulaw",
     "input_audio_transcription_config",
@@ -141,7 +130,6 @@ __all__ = [
     "normalize_conversation_item",
     "parse_realtime_audio_format",
     "realtime_audio_format_object",
-    "realtime_error_type",
     "realtime_max_output_tokens",
     "realtime_output_format",
     "realtime_overlap_fields",

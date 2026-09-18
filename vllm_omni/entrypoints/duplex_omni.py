@@ -5,7 +5,7 @@
 
 Sessions run inside the engine (``DuplexSessionRunner`` on the orchestrator
 loop of ``DuplexOrchestrator``). This class opens / resumes / closes them and
-pipes typed ``DuplexCommand`` objects in and typed ``DuplexEvent`` objects out
+pipes typed ``RealtimeCommand`` objects in and typed ``DuplexEvent`` objects out
 through a ``DuplexSessionHandle``. It holds no session state beyond the
 handle registry, so the websocket handler and ``InlineDuplexClient`` are both
 thin consumers of the same surface.
@@ -34,17 +34,13 @@ from uuid import uuid4
 from vllm.logger import init_logger
 
 from vllm_omni.config.stage_config import DuplexSessionRuntimeConfig
-from vllm_omni.engine.duplex import commands as duplex_commands
-from vllm_omni.engine.duplex.commands import DuplexCommand
 from vllm_omni.engine.duplex.config import DuplexCapabilities, DuplexSessionConfig, ResponseCreateOptions
-from vllm_omni.engine.duplex.events import DuplexEvent, SessionClosed
-from vllm_omni.engine.duplex.messages import (
-    DuplexControlResultMessage,
-    DuplexSessionError,
-    DuplexSessionEventMessage,
-)
+from vllm_omni.engine.duplex.messages import DuplexControlResultMessage, DuplexSessionError, DuplexSessionEventMessage
 from vllm_omni.engine.duplex_omni_engine import DuplexOmniEngine
 from vllm_omni.entrypoints.async_omni import AsyncOmni
+from vllm_omni.protocol.duplex import commands as duplex_commands
+from vllm_omni.protocol.duplex.commands import RealtimeCommand
+from vllm_omni.protocol.duplex.events import DuplexEvent, SessionClosed
 
 logger = init_logger(__name__)
 
@@ -87,7 +83,7 @@ class DuplexSessionHandle:
 
     # ---- input ----
 
-    async def submit(self, command: DuplexCommand) -> None:
+    async def submit(self, command: RealtimeCommand) -> None:
         """Enqueue one command in caller order; rejections arrive as ``ErrorEvent`` on ``events()``."""
         if self._closed:
             raise DuplexSessionError(

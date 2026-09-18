@@ -26,8 +26,6 @@ import pytest
 from vllm.sampling_params import SamplingParams
 
 from vllm_omni.config.stage_config import DuplexSessionRuntimeConfig
-from vllm_omni.engine.duplex import commands
-from vllm_omni.engine.duplex.commands import DuplexCommand
 from vllm_omni.engine.duplex.config import DuplexSessionConfig, DuplexSessionState
 from vllm_omni.engine.duplex.contracts import (
     DuplexOutputContext,
@@ -38,7 +36,6 @@ from vllm_omni.engine.duplex.contracts import (
     DuplexStageSubmissionResult,
     duplex_resource_request_id,
 )
-from vllm_omni.engine.duplex.events import DuplexEvent
 from vllm_omni.engine.duplex.messages import (
     CloseDuplexSessionMessage,
     DuplexControlResultMessage,
@@ -50,6 +47,9 @@ from vllm_omni.engine.duplex.session.manager import DuplexSessionManager
 from vllm_omni.engine.duplex.session.runner import DuplexSessionRunner
 from vllm_omni.metrics.stats import StageRequestStats, StageStats
 from vllm_omni.model_executor.models.minicpmo_4_5.duplex.plugin import MiniCPMO45DuplexPlugin
+from vllm_omni.protocol.duplex import commands
+from vllm_omni.protocol.duplex.commands import RealtimeCommand
+from vllm_omni.protocol.duplex.events import DuplexEvent
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -121,7 +121,7 @@ class Harness:
     def session(self):
         return self.runner.session
 
-    def submit(self, command: DuplexCommand) -> None:
+    def submit(self, command: RealtimeCommand) -> None:
         self.manager.dispatch(DuplexSessionCommandMessage(session_id=SESSION_ID, command=command))
 
     async def settle(self, *, idle_s: float = 0.05, timeout_s: float = 3.0) -> list[DuplexEvent]:
@@ -156,7 +156,7 @@ class Harness:
         self.events.extend(collected)
         return collected
 
-    async def run(self, command: DuplexCommand) -> list[DuplexEvent]:
+    async def run(self, command: RealtimeCommand) -> list[DuplexEvent]:
         self.submit(command)
         return await self.settle()
 

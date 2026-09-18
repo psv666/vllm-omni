@@ -17,11 +17,11 @@ It owns no session. It does not decide when a response starts, what a model is
 prompted with, whether a turn is over, or where committed audio goes. Those are
 runtime decisions, and after PR #7413 a duplex session's runtime decisions all
 belong to ``vllm_omni.engine.duplex`` --- the session runner, the typed
-``DuplexCommand`` / ``DuplexEvent`` boundary and the ``DuplexModelPlugin`` seam.
+``RealtimeCommand`` / ``DuplexEvent`` boundary and the ``DuplexModelPlugin`` seam.
 This package sits *under* that: the duplex engine binds the codec to its own
 command and event vocabulary in
-``vllm_omni.engine.duplex.realtime_commands`` and
-``vllm_omni.engine.duplex.realtime_events``.
+``vllm_omni.engine.duplex.command_decoder`` and
+``vllm_omni.engine.duplex.session_projection``.
 
 Why it is separate (RFC #6592, P0a)
 -----------------------------------
@@ -61,7 +61,6 @@ from vllm_omni.protocol.realtime.audio import (
     MIN_INPUT_SAMPLE_RATE_HZ,
     convert_input_audio_with_rate,
     convert_output_audio,
-    encode_float32_mono_wav_base64,
     resample_pcm16_mono,
     validate_input_sample_rate_hz,
     wav_payload_to_pcm16,
@@ -134,7 +133,6 @@ __all__ = [
     "convert_output_audio",
     "copy_realtime_input_hints",
     "decode_audio_append",
-    "encode_float32_mono_wav_base64",
     "input_audio_transcription_config",
     "input_explicitly_non_speech",
     "input_looks_like_speech",

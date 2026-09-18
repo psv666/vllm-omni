@@ -79,7 +79,6 @@ CHECK_IMPORTS = {
             "vllm_omni/entrypoints/openai/video_stream_base.py",
             "vllm_omni/entrypoints/openai/video_stream_session.py",
             "vllm_omni/experimental/fullduplex/client.py",
-            "vllm_omni/engine/duplex/commands.py",
             "vllm_omni/engine/duplex/contracts.py",
             "vllm_omni/protocol/realtime/audio.py",
             "vllm_omni/protocol/realtime/audio_input.py",

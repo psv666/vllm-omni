@@ -45,7 +45,7 @@ the model plugins.
                    │                                            ▼
                    │                          ┌──────────────────────────────────────┐
                    │                          │ OmniDuplexSessionHandler (thin)      │
-                   │                          │  websocket I/O, command_from_realtime│
+                   │                          │  websocket I/O, decode_command       │
                    │                          │  event.to_realtime(), attachment /   │
                    │                          │  resume tokens / replay journal      │
                    │                          └──────────────────┬───────────────────┘
@@ -53,7 +53,7 @@ the model plugins.
         ┌──────────────────────────────────────────────────────────────────────────────┐
         │ DuplexOmni(AsyncOmni)                      [entrypoints/duplex_omni.py, thin] │
         │   open_session / get_session / resume_session / detach_session / close_session│
-        │   DuplexSessionHandle: submit(DuplexCommand) / events() -> DuplexEvent       │
+        │   DuplexSessionHandle: submit(RealtimeCommand) / events() -> DuplexEvent     │
         └──────────────────────────────────────┬───────────────────────────────────────┘
                                                │ engine.open/close/resume/touch_session_async (RPC)
                                                │ engine.submit_command_async (one-way)
@@ -103,12 +103,12 @@ plugin and the session runtime config to `DuplexOrchestrator` directly.
    one object, `DuplexEngineSession`, owned by one `DuplexSessionRunner` on
    the orchestrator loop. Nothing above the engine keeps session state beyond
    a handle (session id, event queue, capabilities, public session object).
-2. **Typed contract.** Commands into a session are `DuplexCommand`
-   dataclasses (`engine/duplex/commands.py`); outputs are `DuplexEvent`
-   dataclasses (`engine/duplex/events.py`). `command_from_realtime()` and
-   `DuplexEvent.to_realtime()` derive the OpenAI Realtime JSON, so the wire
-   format is never hand-built, and the websocket handler and the inline client
-   share one conversion.
+2. **Typed contract.** Commands into a session are `RealtimeCommand`
+   dataclasses (`protocol/duplex/commands.py`); outputs are `DuplexEvent`
+   dataclasses (`protocol/duplex/events.py`). `decode_command()` and
+   `DuplexEvent.to_realtime()` decode client input and render server output,
+   respectively. The websocket handler and the inline client share these
+   conversions.
 3. **Generic bases and the turn-based classes have zero duplex vocabulary.**
    `OmniBase`, `AsyncOmniBase`, `AsyncOmni`, `OmniEngineBase`,
    `AsyncOmniEngine`, `OrchestratorBase` and `Orchestrator` carry only
@@ -130,7 +130,7 @@ plugin and the session runtime config to `DuplexOrchestrator` directly.
    attachment/resume/replay bookkeeping; it holds no session state.
 6. **No `typing.Protocol`** in the duplex surfaces: the plugin, data plane,
    session state, PCM buffer, stage port and client transport seams are ABCs.
-7. **The wire codec is not duplex, and a wire type is not a mailbox message.**
+7. **Protocol vocabulary is shared; internal conversions and session state stay in the engine.**
    The event and command *vocabulary* plus its wire rendering, the audio format
    negotiation, the conversation-item rules and the error envelope are model-
    and runtime-agnostic, and split along the three tiers
@@ -143,27 +143,16 @@ plugin and the session runtime config to `DuplexOrchestrator` directly.
    `resume_token`, `input_audio_buffer.append` without `video_frames`. Our
    error **codes** are Tier 3 (`protocol/duplex/errors.py`); only the envelope
    shape and OpenAI's three `error.type` classes are Tier 1.
-   What stays engine-side is everything that is *internal representation*
-   rather than contract: `DuplexCommand.payload()` renders the session runner's
-   mailbox dictionary, whose channel genuinely differs from the client event
-   (`session.update` and the three `conversation.item.*` commands all travel on
-   `turn.signal`); `engine/duplex/realtime_commands.py` decides which command a
-   decoded event becomes; `engine/duplex/realtime_events.py` holds the
-   session's projection state. The codec may not import the engine, the
-   entrypoints, `model_executor` or the clients
-   (`tests/protocol/realtime/test_protocol_import_boundary.py`), and there is
-   exactly one implementation of each codec behaviour
-   (`tests/protocol/realtime/test_realtime_codec_single_source.py`).
-   The dependency chain is `protocol/realtime` <- `protocol/duplex` <- engine /
-   entrypoints / clients, and a duplex consumer uses **only** the middle link:
-   `protocol/duplex/**` re-exports the Tier 1 names it does not extend, so a
-   helper that later needs a duplex-specific version (`convert_input_audio_with_rate`
-   resamples to MiniCPM-o's 16 kHz rather than the client's rate) is overridden
-   in one file instead of at every call site
-   (`tests/protocol/duplex/test_duplex_protocol_facade.py`).
-   `DuplexEvent` is therefore a plain alias of `RealtimeEvent` --- an event has
-   no engine-internal half --- while `DuplexCommand` is a real class, because a
-   command does.
+   The decoder (`engine/duplex/command_decoder.py`) constructs protocol command
+   objects. The runner queues them directly; it reads their fields or calls
+   `to_internal_payload()` from `engine/duplex/command_payload.py` for handlers
+   that consume dictionaries. No engine-specific command subclasses are needed.
+   `engine/duplex/session_projection.py` owns the projection logic over the
+   session's response/item/input state. The protocol must not import the engine,
+   entrypoints, model code or clients; the import boundary tests enforce this.
+   Duplex consumers import `protocol/duplex`, which reuses shared Tier 1 types
+   and adds duplex extensions. This centralizes imports, but re-exporting a
+   helper does not change dependencies already bound inside it.
 
 ## Package layout
 
@@ -214,19 +203,14 @@ vllm_omni/
 │   ├── orchestrator.py              OrchestratorBase + Orchestrator
 │   ├── duplex_orchestrator.py       DuplexOrchestrator (+ DuplexOrchestratorRequestState; implements DuplexStagePort)
 │   └── duplex/
-│       ├── commands.py              mailbox half: DuplexCommand.payload() + the mailbox `type`,
-│       │                            paired with each protocol command; command_from_realtime
-│       ├── realtime_commands.py     duplex binding of the codec: decoded event -> DuplexCommand,
-│       │                            DUPLEX_REALTIME_CAPABILITIES, duplex_response_format
-│       ├── events.py                re-export shim (DuplexEvent = RealtimeEvent) + the runner's
-│       │                            epoch-filter sets DOMAIN_TERMINAL_EVENTS / MODEL_OUTPUT_EVENTS
-│       ├── realtime_events.py       RealtimeProjectionState: internal event -> typed events
+│       ├── command_decoder.py       client message -> typed protocol command; duplex capabilities
+│       ├── command_payload.py       conversions for handlers that consume internal dictionaries
+│       ├── session_projection.py    session state -> typed events; stateful command resolution
 │       ├── messages.py              queue envelopes (Open/Close/Resume/Touch/Command/Result/Event), DuplexSessionError
 │       ├── config.py                DuplexSessionConfig, DuplexCapabilities, ResponseCreateOptions
 │       ├── contracts.py             DuplexFence (session_id, epoch, turn_id), stage request records, DuplexStagePort
 │       ├── plugin.py                DuplexModelPlugin, DuplexModelSessionState, DuplexDataPlane, PcmAppendBuffer ABCs
 │       ├── turn_detection.py        server-side VAD turn detector used by the session
-│       ├── audio.py                 compatibility re-export, via protocol/duplex
 │       ├── vad.py / intermediate.py
 │       └── session/                 one engine-resident session and everything that runs it
 │           ├── engine_session.py    DuplexEngineSession: ledgers, lease, fence, stage resources, append sequencing
@@ -278,7 +262,7 @@ open   DuplexOmni.open_session(config)
             plugin.validate_client_extra_body / prepare_runtime_config, DuplexEngineSession,
             Stage0 request id reserved (ensure_stage_request), DuplexSessionRunner.start()
          -> first event: SessionCreated (announces the allocated id)
-command  handle.submit(DuplexCommand)
+command  handle.submit(RealtimeCommand)
          -> engine.submit_command_async -> DuplexSessionCommandMessage on the request queue [one-way]
          -> DuplexSessionManager.dispatch: unknown_session / input_backpressure checks, then runner mailbox
 output   DuplexOrchestrator._intercept_stage_output -> runner.on_stage_output -> mailbox -> typed events
@@ -408,7 +392,7 @@ follow-up PRs port them (RFC vllm-omni#7181, PR 2/3).
    when the model supports resume); `session.resume(session_id, resume_token,
    last_received_server_event_seq)` -> `attachment.authenticate_resume` ->
    `omni.resume_session`;
-3. reader loop: JSON -> `RealtimeEnvelope.translate` (`translate_realtime_command`
+3. reader loop: JSON -> `RealtimeEnvelope.translate` (`decode_command`
    with the session's declared audio defaults) -> `handle.submit`;
    envelope-level errors (invalid JSON, oversize frame, unknown type,
    event acks) are answered locally;

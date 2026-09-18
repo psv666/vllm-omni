@@ -36,7 +36,7 @@ from vllm_omni.engine.messages import EngineQueueMessage
 from vllm_omni.engine.orchestrator import OrchestratorBase
 
 if TYPE_CHECKING:
-    from vllm_omni.engine.duplex.commands import DuplexCommand
+    from vllm_omni.protocol.duplex.commands import RealtimeCommand
 
 logger = init_logger(__name__)
 
@@ -279,7 +279,7 @@ class DuplexOmniEngine(AsyncOmniEngine):
             lambda: self._touch_session(session_id, activity=activity, timeout=timeout),
         )
 
-    def _submit_command(self, session_id: str, command: DuplexCommand) -> None:
+    def _submit_command(self, session_id: str, command: RealtimeCommand) -> None:
         """One-way: enqueue a session command in caller order (blocks only on queue backpressure)."""
         if not self.is_alive():
             raise DuplexSessionError("engine is not alive", code="engine_dead", session_id=session_id)
@@ -291,7 +291,7 @@ class DuplexOmniEngine(AsyncOmniEngine):
                 "engine request queue is full", code="engine_backpressure", retryable=True, session_id=session_id
             ) from exc
 
-    async def submit_command_async(self, session_id: str, command: DuplexCommand) -> None:
+    async def submit_command_async(self, session_id: str, command: RealtimeCommand) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: self._submit_command(session_id, command))
 

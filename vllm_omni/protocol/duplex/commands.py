@@ -19,9 +19,9 @@ vocabulary and a duplex consumer never has to import the Tier 1 package
 directly; keeping them declared there means a GA-only consumer is still not
 handed events its clients never send.
 
-None of these carries the engine's mailbox rendering: ``payload()`` and its
-channel live in ``vllm_omni.engine.duplex.commands``, because for four of the
-seventeen the runner's channel is not the client event type at all.
+The runner queues these command objects directly. Conversions needed by its
+internal dictionary handlers live in
+``vllm_omni.engine.duplex.command_payload.to_internal_payload``.
 """
 
 from __future__ import annotations
@@ -76,11 +76,12 @@ class Commit(realtime_commands.Commit):
     ``docs/serving/realtime_duplex_api.md`` ("Commit != response").
     """
 
-    #: Realtime conversation item created for this commit (wire correlation only).
+    final: bool = True
     #: ``None`` means "no explicit request": the runner decides on commit (auto-response
     #: sessions answer on their own); ``True`` / ``False`` force it.
     create_response: bool | None = None
     is_speech: bool | None = None
+    #: Realtime conversation item created for this commit.
     realtime_item_id: str | None = None
 
 

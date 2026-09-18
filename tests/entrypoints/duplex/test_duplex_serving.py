@@ -15,13 +15,13 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from vllm_omni.config.stage_config import DuplexSessionRuntimeConfig
-from vllm_omni.engine.duplex import commands
 from vllm_omni.engine.duplex.config import DuplexCapabilities
-from vllm_omni.engine.duplex.events import AudioDelta, DuplexEvent, SessionClosed, SessionCreated
 from vllm_omni.engine.duplex.messages import DuplexSessionError
 from vllm_omni.entrypoints.duplex.realtime_input import RealtimeEnvelope, parse_resume_request
 from vllm_omni.entrypoints.duplex.serving import OmniDuplexSessionHandler
 from vllm_omni.entrypoints.duplex.websocket import MAX_EVENT_BYTES
+from vllm_omni.protocol.duplex import commands
+from vllm_omni.protocol.duplex.events import AudioDelta, DuplexEvent, SessionClosed, SessionCreated
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -92,13 +92,13 @@ class FakeHandle:
         self.lease_generation = 0
         self.closed = False
         self.close_reasons: list[str] = []
-        self.commands: list[commands.DuplexCommand] = []
+        self.commands: list[commands.RealtimeCommand] = []
         self._outbox: asyncio.Queue[DuplexEvent] = asyncio.Queue()
 
     def deliver(self, event: DuplexEvent) -> None:
         self._outbox.put_nowait(event)
 
-    async def submit(self, command: commands.DuplexCommand) -> None:
+    async def submit(self, command: commands.RealtimeCommand) -> None:
         if self.closed:
             raise DuplexSessionError("closed", code="session_closed", session_id=self.session_id)
         self.commands.append(command)
@@ -390,7 +390,7 @@ async def test_a_client_close_still_delivers_session_closed_before_the_socket_go
     handle = omni.handles[created["session"]["id"]]
     submit = handle.submit
 
-    async def closing_submit(command: commands.DuplexCommand) -> None:
+    async def closing_submit(command: commands.RealtimeCommand) -> None:
         await submit(command)
         if isinstance(command, commands.CloseSession):
             # Same order as the real handle: queue the event, then flip the flag.

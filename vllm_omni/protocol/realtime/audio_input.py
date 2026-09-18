@@ -15,7 +15,7 @@ verdict. It is a pure function of the event plus the session's
 :class:`~vllm_omni.protocol.realtime.session.RealtimeInputDefaults`, so any
 consumer decodes an append the same way. Building a consumer's own command
 object out of it is one constructor call --- see
-``vllm_omni.engine.duplex.realtime_commands.build_append_audio``, which wraps it
+``vllm_omni.engine.duplex.command_decoder.build_append_audio``, which wraps it
 for the duplex ``AppendAudio``.
 
 The speech verdict here is the *client-declared* one (explicit flags, a VAD

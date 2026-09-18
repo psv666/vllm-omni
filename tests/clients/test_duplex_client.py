@@ -43,9 +43,9 @@ from vllm_omni.clients.duplex import (
     write_pcm16_wav,
 )
 from vllm_omni.clients.inline_duplex import InlineDuplexClient
-from vllm_omni.engine.duplex import commands as duplex_commands
-from vllm_omni.engine.duplex import events as duplex_events
 from vllm_omni.engine.duplex.messages import DuplexSessionError
+from vllm_omni.protocol.duplex import commands as duplex_commands
+from vllm_omni.protocol.duplex import events as duplex_events
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -131,7 +131,7 @@ class FakeInlineHandle:
         self.session_id = session_id
         self.closed = False
         self.close_calls = 0
-        self.commands: list[duplex_commands.DuplexCommand] = []
+        self.commands: list[duplex_commands.RealtimeCommand] = []
         self.consumer_active = False
         self._outbox: asyncio.Queue = asyncio.Queue()
 
@@ -141,7 +141,7 @@ class FakeInlineHandle:
     def feed(self, raw: dict[str, object]) -> None:
         self.deliver(_WireEvent(raw))
 
-    async def submit(self, command: duplex_commands.DuplexCommand) -> None:
+    async def submit(self, command: duplex_commands.RealtimeCommand) -> None:
         if self.closed:
             raise DuplexSessionError("closed", code="session_closed", session_id=self.session_id)
         self.commands.append(command)
