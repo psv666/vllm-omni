@@ -79,6 +79,11 @@
   let echoTimer = null;
   let sessionGeneration = 0;
   let audioChain = Promise.resolve();
+  // Retain interrupted IDs until startSession() resets the session. Queued
+  // events and pending audio decodes can outlive response.done, so removing
+  // IDs there could resume interrupted playback. This set grows with the
+  // interruptions in a call; sessionGeneration rejects old-session decodes
+  // after the set is cleared for a new session.
   const interruptedResponses = new Set();
   const pendingEvents = new Set();
   let assistantTextChannel = null;

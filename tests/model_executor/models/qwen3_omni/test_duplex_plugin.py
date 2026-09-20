@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+import ast
 import asyncio
 import base64
 from types import SimpleNamespace
@@ -307,6 +308,49 @@ def test_audio_projector_handles_delta_tensor_lists_and_sample_rate():
     assert events[0]["end_of_turn"] is True
 
 
+def test_format_history_merges_user_parts_but_preserves_empty_assistant_boundary():
+    text = {"type": "text", "text": "first question"}
+    image = {"type": "image"}
+    audio = {"type": "audio"}
+    source = [
+        {"role": "system", "content": "instructions"},
+        {"role": "user", "content": [image]},
+        {"role": "user", "content": "first question"},
+        {"role": "user", "content": [audio]},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "next question"},
+        {"role": "user", "content": [image, audio]},
+    ]
+    before = repr(source)
+    assert Qwen3OmniDuplexPlugin.format_history(source) == [
+        source[0],
+        {"role": "user", "content": [image, text, audio]},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": [image, audio, {"type": "text", "text": "next question"}]},
+    ]
+    assert repr(source) == before
+
+
+def test_audio_byte_budget_evicts_whole_multimodal_turn():
+    plugin = Qwen3OmniDuplexPlugin(lambda *args: None)
+    state = plugin.create_session_state()
+    first = {"role": "user", "content": [{"type": "audio_url"}]}
+    image = {"role": "user", "content": [{"type": "image_url"}]}
+    source = [first, image]
+    plugin.prepare_prompt_config({"conversation": source}, state=state, payload={"audio": "A" * (5 * 1024 * 1024)})
+    source.extend(
+        [
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": [{"type": "audio_url"}]},
+        ]
+    )
+    current = {"audio": "B" * (4 * 1024 * 1024)}
+    config = plugin.prepare_prompt_config({"conversation": source}, state=state, payload=current)
+    assert config["qwen_messages"] == [{"role": "user", "audio_payload": current}]
+    assert len(state.audio_history) == 1
+    assert source[1] is image
+
+
 def test_audio_history_is_bounded_and_does_not_cross_sessions():
     plugin = Qwen3OmniDuplexPlugin(lambda *args: None)
     state, other = plugin.create_session_state(), plugin.create_session_state()
@@ -326,7 +370,7 @@ def test_audio_history_is_bounded_and_does_not_cross_sessions():
 
 
 @pytest.mark.parametrize("assistant_text", ["", "previous answer"])
-def test_dropped_audio_does_not_leave_assistant_after_retained_image(assistant_text):
+def test_dropped_audio_removes_its_image_and_assistant(assistant_text):
     plugin = Qwen3OmniDuplexPlugin(lambda *args: None)
     state = plugin.create_session_state()
     image = {"role": "user", "content": [{"type": "image_url"}]}
@@ -336,7 +380,6 @@ def test_dropped_audio_does_not_leave_assistant_after_retained_image(assistant_t
         config = plugin.prepare_prompt_config({"conversation": history}, state=state, payload={"audio": str(i)})
         history.append({"role": "assistant", "content": assistant_text})
     assert config["qwen_messages"] == [
-        image,
         {"role": "user", "audio_payload": {"audio": "2"}},
         {"role": "assistant", "content": assistant_text},
         {"role": "user", "audio_payload": {"audio": "3"}},
@@ -608,6 +651,90 @@ async def test_image_context_reaches_audio_turn_and_survives_commit():
             isinstance(m["content"], list) and any(p.get("type") == "image_url" for p in m["content"])
             for m in h.session.history
         )
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_multiple_commits_before_response_keep_one_combined_audio_in_history():
+    from vllm_omni.engine.duplex.commands import CreateItem
+
+    h = await open_qwen()
+    try:
+        await h.run(append_audio(value=0.1))
+        await h.run(Commit(final=True, create_response=False))
+        await h.run(CreateItem(item=image_item()))
+        await h.run(append_audio(value=0.2))
+        await h.run(Commit(final=True, create_response=False))
+        await h.run(CreateResponse())
+        assert len(h.port.submissions) == 1, [e.to_realtime() for e in h.events]
+        first = h.port.submissions[-1]
+        audio = first.prompt["multi_modal_data"]["audio"]
+        assert len(audio) == 1
+        np.testing.assert_allclose(audio[0][0], np.repeat(np.array([0.1, 0.2], dtype=np.float32), 16000))
+        response_id = h.session.active_response_id
+        await h.deliver_and_settle(
+            tts_output(first.context.request_id, samples=0, text="combined answer", finished=True), stage_id=0
+        )
+        await h.deliver_and_settle(tts_output(first.context.request_id, finished=True), stage_id=2)
+        await h.run(AckPlayback(response_id=response_id, played_ms=1000, committed_ms=1000))
+        await h.run(append_audio(value=0.3))
+        await h.run(Commit(final=True, create_response=True))
+        next_audio = h.port.submissions[-1].prompt["multi_modal_data"]["audio"]
+        assert len(next_audio) == 2
+        np.testing.assert_array_equal(next_audio[0][0], audio[0][0])
+        np.testing.assert_allclose(next_audio[1][0], 0.3)
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_after_commit", [False, True])
+async def test_multimodal_turn_is_merged_retained_and_evicted_with_its_answer(image_after_commit):
+    from vllm_omni.engine.duplex.commands import CreateItem
+
+    h = await open_qwen()
+    try:
+        for turn in range(6):
+            if turn == 0 and not image_after_commit:
+                await h.run(CreateItem(item=image_item()))
+            await h.run(append_audio(value=(turn + 1) / 10))
+            await h.run(Commit(final=True, create_response=False))
+            assert len(h.port.submissions) == turn
+            if turn == 0 and image_after_commit:
+                await h.run(CreateItem(item=image_item()))
+            await h.run(CreateResponse())
+            submission = h.port.submissions[-1]
+            prompt = submission.prompt
+            messages = ast.literal_eval(prompt["prompt"])
+            first_retained = max(0, turn - 3)
+            assert [m["role"] for m in messages] == ["user", "assistant"] * (turn - first_retained) + ["user"]
+            assert [m["content"] for m in messages if m["role"] == "assistant"] == [
+                f"answer-{i}" for i in range(first_retained, turn)
+            ]
+            audios = prompt["multi_modal_data"]["audio"]
+            assert len(audios) == turn - first_retained + 1
+            for index, (audio, rate) in enumerate(audios, start=first_retained):
+                assert rate == 16000
+                np.testing.assert_allclose(audio, (index + 1) / 10)
+            assert len(prompt["multi_modal_data"].get("image", [])) == int(first_retained == 0)
+            if first_retained == 0:
+                parts = messages[0]["content"]
+                assert sum(p["type"] == "image" for p in parts) == 1
+                assert sum(p["type"] == "audio" for p in parts) == 1
+                assert {"type": "text", "text": "What color is this?"} in parts
+
+            response_id = h.session.active_response_id
+            request_id = submission.context.request_id
+            await h.deliver_and_settle(
+                tts_output(request_id, samples=0, text=f"answer-{turn}", finished=True), stage_id=0
+            )
+            await h.deliver_and_settle(tts_output(request_id, finished=True), stage_id=2)
+            await h.run(AckPlayback(response_id=response_id, played_ms=1000, committed_ms=1000))
+            assert h.session.history[-1]["content"] == f"answer-{turn}"
+        # Prompt eviction leaves source items individually addressable by the client.
+        assert "camera" in h.session.history_item_ids
+        assert not any(e.to_realtime().get("type") == "error" for e in h.events)
     finally:
         await h.manager.shutdown()
 

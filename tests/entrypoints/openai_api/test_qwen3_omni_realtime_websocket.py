@@ -729,18 +729,19 @@ def _duplex_assert_prompt(
     assert len(captures) == request_count, captures
     capture = max(captures, key=lambda item: item[0])[1]
     assert capture["audio_count"] == audio_count
-    assert len(capture["images"]) == 1, "Camera context must survive interruption and audio-history pruning"
-    messages = [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": [{"type": "image"}]},
-    ]
+    # The camera belongs to the first user turn and leaves with its audio.
+    image_retained = request_count <= 4
+    assert len(capture["images"]) == int(image_retained)
+    messages: list[dict[str, Any]] = [{"role": "system", "content": instructions}]
     if assistant_texts is None:
         assistant_texts = [""] * (audio_count - 1)
     assert len(assistant_texts) == audio_count - 1
     for index in range(audio_count):
         if index:
             messages.append({"role": "assistant", "content": assistant_texts[index - 1]})
-        messages.append({"role": "user", "content": [{"type": "audio"}]})
+        parts = [{"type": "image"}] if index == 0 and image_retained else []
+        parts.append({"type": "audio"})
+        messages.append({"role": "user", "content": parts})
     expected = runtime.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     assert capture["prompt"] == expected
     # Use the checkpoint tokenizer too: a repr(messages) processor stub cannot
