@@ -45,7 +45,6 @@
         "percentile-metrics": "ttft,tpot,itl,e2el,audio_rtf,audio_ttfp,audio_duration",
         "seed": 0,
         "random_range_ratio": 0.0,
-        "num_warmups": 2,
         "extra_body": {
           "return_stage_metrics": true,
           "sampling_params_list": [

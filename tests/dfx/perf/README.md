@@ -4,7 +4,9 @@ The `random` sweep in `tests/test_qwen3_omni_no_async_chunk.json` measures
 2500 configured input tokens, 900 Thinker output tokens, and exactly 1536 Talker
 output tokens. The actual chat-templated input token count can be larger.
 Concurrency/request-count pairs remain `(1, 4)`, `(4, 16)`, `(8, 32)`, `(16, 64)`,
-and `(32, 128)`. Each point uses two warmups and benchmark seed zero.
+and `(32, 128)`. Each point uses benchmark seed zero and the runner's existing
+`max(2, concurrency)` warmup request count: 2, 4, 8, 16 and 32 requests,
+respectively. Warmup requests use the same concurrency limit as the measured run.
 The same configuration is used by CUDA and NPU nightly jobs.
 
 ## What is fixed
@@ -53,7 +55,8 @@ Before updating the baseline:
    concurrency 1, using three independent server starts per revision. Stop and
    investigate if the candidate's median RTF regresses by more than 10%.
 2. Run the candidate's full five-point sweep three times with independent server
-   starts, preserving two warmups per point. Check every Thinker length (900),
+   starts, preserving `max(2, concurrency)` warmup requests per point.
+   Check every Thinker length (900),
    Talker length (1536), length finish reason, nonempty audio, and audio frame-count
    stability. Record the frame-count distribution and investigate differences.
    Check request success and fixed lengths in NPU CI too.
