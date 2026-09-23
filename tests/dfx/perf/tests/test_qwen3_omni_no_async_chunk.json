@@ -43,6 +43,27 @@
         "random_output_len": 900,
         "ignore_eos": true,
         "percentile-metrics": "ttft,tpot,itl,e2el,audio_rtf,audio_ttfp,audio_duration",
+        "seed": 0,
+        "random_range_ratio": 0.0,
+        "num_warmups": 2,
+        "extra_body": {
+          "return_stage_metrics": true,
+          "sampling_params_list": [
+            {
+              "temperature": 0.0,
+              "max_tokens": 900,
+              "ignore_eos": true
+            },
+            {
+              "temperature": 0.9,
+              "top_k": 50,
+              "repetition_penalty": 1.05,
+              "seed": 0,
+              "min_tokens": 1536,
+              "max_tokens": 1536
+            }
+          ]
+        },
         "baseline": {
           "H100": {
             "mean_audio_rtf": [

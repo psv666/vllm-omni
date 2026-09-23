@@ -3579,6 +3579,12 @@ async def benchmark(
             "input_lens": [output.prompt_len for output in outputs],
             "errors": [output.error for output in outputs],
         }
+    # Preserve request order, including missing snapshots, so CI can verify
+    # fixed stage workloads without parsing logs or storing audio payloads.
+    request_stage_metrics = [getattr(output, "stage_metrics", None) for output in outputs]
+    if any(snapshot is not None for snapshot in request_stage_metrics):
+        result["request_stage_metrics"] = request_stage_metrics
+
     # Plain-vLLM backends (e.g. the vLLM-text perf config) return upstream
     # RequestFuncOutput objects without the Mix duplex fields; read them
     # tolerantly or the whole benchmark result is discarded ("fallback to
