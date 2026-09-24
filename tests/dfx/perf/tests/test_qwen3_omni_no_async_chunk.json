@@ -64,17 +64,7 @@
             }
           ]
         },
-        "baseline": {
-          "H100": {
-            "mean_audio_rtf": [
-              0.169,
-              0.2041,
-              0.2382,
-              0.3177,
-              0.4595
-            ]
-          }
-        }
+        "baseline": {}
       },
       {
         "dataset_name": "random-mm",

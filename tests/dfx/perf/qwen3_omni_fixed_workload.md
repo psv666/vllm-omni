@@ -44,15 +44,17 @@ batching and tail cropping can affect the number of returned samples. Investigat
 duration changes separately instead of treating a passing token check as proof
 that audio length or quality is unchanged.
 
-## Baseline migration: pending H100 calibration
+## Baseline: pending H100 calibration
 
-The five H100 values currently in the JSON are the historical **variable-length**
-baselines. They are deliberately unchanged until fixed-workload H100 measurements
-are available. **Do not merge this workload change with those old baselines.**
-Do not replace them with local L20X results or the approximately 0.21 RTF measured
-for the old variable-length workload.
+The `random` row's `baseline` is intentionally empty (`{}`). The five historical
+H100 values (0.169, 0.2041, 0.2382, 0.3177, 0.4595) were measured with the old
+**variable-length** Talker workload and are not comparable with this one, so they
+were removed rather than left as false regression targets. Until fixed-workload
+H100 medians are added, this sweep still runs and validates lengths in nightly
+but has no RTF baseline. Do not fill it with local L20X results or with values
+measured for the old variable-length workload.
 
-Before updating the baseline:
+Before adding the baseline:
 
 1. Pin and record the model snapshot, container digest, installed dependencies,
    driver, GPU model and both source revisions. On the same H100 environment,
@@ -67,8 +69,8 @@ Before updating the baseline:
    Check request success and fixed lengths in NPU CI too.
 3. For each concurrency, require `(max RTF - min RTF) / median RTF <= 0.05` across
    the three runs. Otherwise investigate variability before calibration.
-4. Replace each H100 baseline with the median of the three corresponding
-   `mean_audio_rtf` measurements, keeping the existing alert threshold. Attach
+4. Set the H100 `mean_audio_rtf` list to the median of the three corresponding
+   measurements per concurrency, keeping the existing alert threshold. Attach
    all measurements and environment metadata to the PR. Mark the workload change
    explicitly; old and new baseline numbers are not directly comparable.
 
