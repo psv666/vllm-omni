@@ -1,6 +1,7 @@
 [
   {
     "test_name": "test_qwen3_omni",
+    "description": "random row: fixed workload (Thinker 900 / Talker 1536 tokens, min_tokens == max_tokens) for comparable audio RTF; H100 baseline pending recalibration, see #8100",
     "mark": [
       {
         "hardware_marks": {
