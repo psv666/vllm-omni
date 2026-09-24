@@ -50,6 +50,7 @@
           "sampling_params_list": [
             {
               "temperature": 0.0,
+              "min_tokens": 900,
               "max_tokens": 900,
               "ignore_eos": true
             },

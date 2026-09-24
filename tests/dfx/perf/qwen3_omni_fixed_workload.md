@@ -1,20 +1,24 @@
-# Qwen3-Omni fixed-workload performance test
+# Qwen3-Omni no-async-chunk fixed-workload notes
 
-The `random` sweep in `tests/test_qwen3_omni_no_async_chunk.json` measures
-2500 configured input tokens, 900 Thinker output tokens, and exactly 1536 Talker
-output tokens. The actual chat-templated input token count can be larger.
+This page covers only the `random` sweep in
+`tests/test_qwen3_omni_no_async_chunk.json`; it is not an index of this directory.
+That sweep measures 2500 configured input tokens and exactly 900 Thinker and 1536
+Talker output tokens. The actual chat-templated input token count can be larger.
 Concurrency/request-count pairs remain `(1, 4)`, `(4, 16)`, `(8, 32)`, `(16, 64)`,
 and `(32, 128)`. Each point uses benchmark seed zero and the runner's existing
 `max(2, concurrency)` warmup request count: 2, 4, 8, 16 and 32 requests,
 respectively. Warmup requests use the same concurrency limit as the measured run.
 The same configuration is used by CUDA and NPU nightly jobs.
+`tests/test_qwen3_omni_multi_replicas.json` still uses a variable-length Talker
+workload; it has separate baselines and is out of scope here.
 
 ## What is fixed
 
 The request supplies the first two entries of `sampling_params_list` explicitly.
 They are complete sampling parameter objects, not partial overlays of deploy
-YAML defaults. Thinker retains greedy sampling and `ignore_eos`; Talker retains
-temperature 0.9, top-k 50 and repetition penalty 1.05, with request seed zero and
+YAML defaults. Thinker retains greedy sampling and `ignore_eos`, with
+`min_tokens == max_tokens == 900`; Talker retains temperature 0.9, top-k 50 and
+repetition penalty 1.05, with request seed zero and
 `min_tokens == max_tokens == 1536`. The omitted Code2Wav entry is copied from the
 server defaults.
 
@@ -27,11 +31,12 @@ Natural termination and quality coverage remain in the existing model tests.
 
 Benchmark results retain `request_stage_metrics`, one snapshot per formal
 request in input order, including missing snapshots. Warmups are excluded.
-The CI runner rejects failed requests, missing snapshots and any fixed stage
-whose `num_tokens_out` differs from the requested length. These snapshots also
-record audio frames/duration and stage timings without embedding audio data.
-The field is retained even without `--save-detailed` so the runner can validate
-normal nightly artifacts.
+Each snapshot keeps only `num_tokens_out`, `finish_reason`, `audio_frames` and
+`audio_duration_s` per stage; per-token latency lists and audio data are not
+stored. The CI runner rejects failed requests, missing snapshots and any fixed
+stage whose `num_tokens_out` differs from the requested length, then prints one
+`Fixed stage workload OK` line. The field is retained even without
+`--save-detailed` so the runner can validate normal nightly artifacts.
 
 Fixed Talker token counts do not guarantee identical waveform sample counts.
 Record the distribution of `audio_frames` and `audio_duration` as well: Code2Wav

@@ -2049,10 +2049,20 @@ def test_get_samples_forwards_upstream_multimodal_backends_kwarg(mocker: MockerF
 
 @pytest.mark.asyncio
 async def test_benchmark_preserves_stage_metrics_request_order_and_missing_snapshots(monkeypatch):
-    """Persist formal requests in input order, excluding warmups and retaining gaps."""
+    """Persist compact formal-request snapshots in input order, excluding warmups and retaining gaps."""
     second_finished = asyncio.Event()
     completion_order = []
-    snapshots = [{"1": {"num_tokens_out": 1536}}, None, {"1": {"num_tokens_out": 486}}]
+    # Request 1 carries the empty dict that openai-chat-omni initializes before any SSE merge.
+    snapshots = [
+        {"1": {"num_tokens_out": 1536, "finish_reason": "length", "vllm_itls_ms": [8.0, 9.0]}},
+        {},
+        {"1": {"num_tokens_out": 486, "finish_reason": "stop"}, "2": {"audio_frames": 24000, "audio_duration_s": 1.0}},
+    ]
+    expected = [
+        {"1": {"num_tokens_out": 1536, "finish_reason": "length"}},
+        None,
+        {"1": {"num_tokens_out": 486, "finish_reason": "stop"}, "2": {"audio_frames": 24000, "audio_duration_s": 1.0}},
+    ]
 
     async def request_func(request_func_input, session, pbar=None):
         request_id = request_func_input.request_id
@@ -2104,4 +2114,10 @@ async def test_benchmark_preserves_stage_metrics_request_order_and_missing_snaps
         ready_check_timeout_sec=0,
     )
     assert completion_order.index(1) < completion_order.index(0)
-    assert result["request_stage_metrics"] == snapshots
+    assert result["request_stage_metrics"] == expected
+
+
+@pytest.mark.parametrize("snapshot", [None, {}, "not-a-dict"])
+def test_compact_request_stage_metrics_drops_empty_snapshots(snapshot):
+    """Empty chat-omni snapshots must not make every result persist request_stage_metrics."""
+    assert patch._compact_request_stage_metrics(snapshot) is None

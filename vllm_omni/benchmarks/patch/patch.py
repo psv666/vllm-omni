@@ -1150,6 +1150,27 @@ def _update_output_stage_metrics_from_payload(
         output.stage_metrics.update(stage_snapshot)
 
 
+# Per-request stage fields persisted in benchmark results. Full snapshots carry
+# per-token latency lists, which would inflate every chat-omni result file.
+_REQUEST_STAGE_METRIC_FIELDS = (
+    defs.NUM_TOKENS_OUT,
+    "finish_reason",
+    defs.AUDIO_FRAMES,
+    f"{defs.AUDIO_DURATION}_s",
+)
+
+
+def _compact_request_stage_metrics(snapshot: object) -> dict[str, dict] | None:
+    """Keep the stage fields used for workload checks; empty snapshots become None."""
+    if not isinstance(snapshot, dict) or not snapshot:
+        return None
+    return {
+        stage: {field: metrics[field] for field in _REQUEST_STAGE_METRIC_FIELDS if field in metrics}
+        for stage, metrics in snapshot.items()
+        if isinstance(metrics, dict)
+    }
+
+
 def _apply_chat_stage0_token_timings(output: MixRequestFuncOutput) -> bool:
     """Apply native Stage 0 timings from a chat response snapshot."""
     stage_metrics = output.stage_metrics
@@ -3581,8 +3602,10 @@ async def benchmark(
         }
     # Preserve request order, including missing snapshots, so CI can verify
     # fixed stage workloads without parsing logs or storing audio payloads.
-    request_stage_metrics = [getattr(output, "stage_metrics", None) for output in outputs]
-    if any(snapshot is not None for snapshot in request_stage_metrics):
+    request_stage_metrics = [
+        _compact_request_stage_metrics(getattr(output, "stage_metrics", None)) for output in outputs
+    ]
+    if any(request_stage_metrics):
         result["request_stage_metrics"] = request_stage_metrics
 
     # Plain-vLLM backends (e.g. the vLLM-text perf config) return upstream
