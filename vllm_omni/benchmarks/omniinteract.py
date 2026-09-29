@@ -474,8 +474,11 @@ def _has_post_commit_decision(
 
 # An ack computed just before a commit event was delivered can still lose the
 # race server-side; the response it acks was already superseded, so the
-# refusal is harmless — record it instead of failing the case.
-_TOLERATED_ERROR_CODES = frozenset({"playback_ack_too_late"})
+# refusal is harmless — record it instead of failing the case. A barge-in
+# model can also retire an interrupted or pruned response's history item before
+# the serialized playback clock reaches it (``playback_item_not_found``); the
+# ack only feeds server history, never the recorded output, so it is recorded too.
+_TOLERATED_ERROR_CODES = frozenset({"playback_ack_too_late", "playback_item_not_found"})
 
 # ``session.close`` carries no reason of its own, so the server stamps the
 # terminal event with the reason it inferred for it. Anything else on a
