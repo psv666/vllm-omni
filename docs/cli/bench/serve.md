@@ -331,7 +331,24 @@ vllm bench serve --omni \
 ```
 
 The deployment serves one session at a time unless `duplex_session.max_sessions` is raised, so keep
-`--max-concurrency 1`. A turn-based model acknowledges a proactive request right away but does not speak again when the
+`--max-concurrency 1`.
+
+Latency is reported per response in the `Duplex Per-Response Latency` block and as flat result keys
+(`num_/mean_/median_/p99_` + name), where every response counts once however many a session had. The standard
+`Mean TTFT` / `audio TTFP` rows instead average each session first, and E2EL and request throughput follow the video
+length because input is paced in real time.
+
+| Result key suffix | Starts at | Ends at |
+| --- | --- | --- |
+| `duplex_response_ttft_ms` / `duplex_response_ttfp_ms` | server: request accepted by the engine | first text / audio output |
+| `duplex_client_ttft_ms` / `duplex_client_ttfp_ms` | client: `response.created` received | first text / audio delta received |
+
+The server timer starts only after the model plugin prepared the prompt and the engine accepted it, so it leaves out
+prompt preparation; for Qwen3-Omni that is decoding the retained images, the chat template, and multimodal
+preprocessing. With server VAD, `response.created` arrives within a few milliseconds of the VAD end of turn, so the
+client keys are the end-of-turn to first-output latency. The server start point differs between model plugins, so
+compare server keys only within one model; the VAD `silence_duration_ms` (500 ms by default) comes on top of both.
+Qwen3-Omni duplex reports no per-token timing, so TPOT and ITL are unavailable. A turn-based model acknowledges a proactive request right away but does not speak again when the
 event later happens, so proactive and 1QnA scenarios score low by construction.
 
 To replay an existing sample set (for example `sampled_cases.jsonl` from a prior run), pass

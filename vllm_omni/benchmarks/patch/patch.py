@@ -3705,6 +3705,14 @@ async def benchmark(
     ]
     if duplex_request_metrics:
         result["duplex_request_metrics"] = duplex_request_metrics
+        from vllm_omni.benchmarks.duplex_session_metrics import (
+            duplex_response_latency_metrics,
+            print_duplex_response_latency_metrics,
+        )
+
+        response_latency = duplex_response_latency_metrics(duplex_request_metrics)
+        result.update(response_latency)
+        print_duplex_response_latency_metrics(response_latency)
     duplex_session_metrics = [
         session_metrics
         for output in outputs

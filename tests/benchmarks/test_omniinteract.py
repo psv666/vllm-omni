@@ -198,6 +198,9 @@ def test_response_metrics_include_engine_tpot_and_stream_window():
         "tpot_ms": {"count": 2, "mean": 15.0, "p50": 10.0, "p99": 20.0},
         "ttfp_ms": {"count": 2, "mean": 300.0, "p50": 200.0, "p99": 400.0},
         "rtf": {"count": 2, "mean": 2.0, "p50": 2.0, "p99": 2.0},
+        # Without server request metrics, TTFT already starts at response.created.
+        "client_ttft_ms": {"count": 2, "mean": 100.0, "p50": 100.0, "p99": 100.0},
+        "client_ttfp_ms": {"count": 2, "mean": 300.0, "p50": 200.0, "p99": 400.0},
         "stages": {
             "0": {
                 "ttft_ms": {"count": 2, "mean": 0.0, "p50": 0.0, "p99": 0.0},
@@ -604,7 +607,8 @@ def test_response_ledger_rejects_identity_errors(events, match: str):
 
 class _CompletionClient:
     def __init__(self, collector: EventCollector):
-        self.events, self.acks = collector, []
+        self.events = collector
+        self.acks: list[tuple[str, int]] = []
 
     def raise_if_reader_stopped(self) -> None:
         return None
