@@ -700,19 +700,20 @@ async def test_acks_continue_after_committed_input():
     assert playback.completion_acked == {"r1"}
 
 
-def test_tolerated_playback_ack_rejection_is_a_warning_not_a_failure():
+@pytest.mark.parametrize("code", ["playback_ack_too_late", "playback_item_not_found"])
+def test_tolerated_playback_ack_rejection_is_a_warning_not_a_failure(code: str):
     collector = _collector(
         (
             {
                 "type": "error",
-                "error": {"type": "invalid_request_error", "code": "playback_ack_too_late"},
+                "error": {"type": "invalid_request_error", "code": code},
             },
             1.0,
         ),
     )
     warnings: list[str] = []
     oi._raise_if_session_terminated(collector, 0, warnings=warnings)
-    assert warnings == ["tolerated in-flight server rejection: playback_ack_too_late"]
+    assert warnings == [f"tolerated in-flight server rejection: {code}"]
 
     collector.add({"type": "error", "error": {"code": "bad_event", "message": "boom"}}, received_at_s=1.1)
     with pytest.raises(RuntimeError, match="bad_event"):
