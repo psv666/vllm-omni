@@ -299,8 +299,40 @@ vllm bench serve --omni \
 
 `--dataset-path` accepts an extracted directory, `data.tar[.gz]`, or a Hugging Face dataset ID; omitting it uses
 `lucky-lance/OmniInteract`. `--num-prompts` is the total across subsets and defaults to 3 for OmniInteract; explicit `0`
-selects all and oversize values use all available cases. Reference audio is required, and OmniInteract uses the
-`/v1/realtime` endpoint.
+selects all and oversize values use all available cases. OmniInteract uses the `/v1/realtime` endpoint. Pass
+`--omniinteract-ref-audio` for models that clone a reference voice (MiniCPM-o); models that refuse one (Qwen3-Omni) run
+without it. `--omniinteract-instructions` sets the session system prompt; by default none is sent.
+
+#### Turn-based duplex models (Qwen3-Omni)
+
+A model-native duplex model decides on its own when to speak, so each clip is streamed and committed once at the end.
+A turn-based model only answers committed turns. `--omniinteract-turn-detection server_vad` lets the server's VAD cut the
+soundtrack into turns: the client never commits, appends 1.5 s of trailing silence so a question at the very end still
+closes, and waits until no speech or response is open. Frames follow the session capabilities: a model that does not
+accept `video_frames` on audio appends but accepts images gets each frame as an `input_image` conversation item, with the
+oldest deleted so at most 8 stay in the session (frames too large for the server's 4 MiB image budget are downscaled).
+Serve with the duplex deployment, which needs the Silero VAD artifact in the Hugging Face cache (see
+[Qwen3-Omni duplex](https://github.com/vllm-project/vllm-omni/blob/main/examples/online_serving/qwen3_omni/README.md)):
+
+```bash
+vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni --port 8091 \
+  --deploy-config vllm_omni/deploy/qwen3_omni_duplex.yaml
+
+vllm bench serve --omni \
+  --backend openai-realtime-duplex \
+  --endpoint /v1/realtime \
+  --base-url http://127.0.0.1:8091 \
+  --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --dataset-name omniinteract \
+  --omniinteract-turn-detection server_vad \
+  --omniinteract-instructions "You are a real-time video assistant. Reply to the user's latest request briefly, in one or two spoken sentences, in the language the user speaks." \
+  --omniinteract-output-dir ./omniinteract-qwen3 \
+  --num-prompts 3
+```
+
+The deployment serves one session at a time unless `duplex_session.max_sessions` is raised, so keep
+`--max-concurrency 1`. A turn-based model acknowledges a proactive request right away but does not speak again when the
+event later happens, so proactive and 1QnA scenarios score low by construction.
 
 To replay an existing sample set (for example `sampled_cases.jsonl` from a prior run), pass
 `--omniinteract-video-list` instead of discovering cases. List order is preserved; `--num-prompts` takes the prefix of
@@ -331,9 +363,11 @@ OmniInteract `batch_inference_minicpmo.py --video_list`); failed cases write
 not answer accuracy. Transcript timestamps are serialized playback-queue times. Playback ACKs report cumulative progress
 incrementally along that serialized clock, like a live listener; the first ack for a response goes out as soon as its audio
 arrives, checkpointing the response's history position so a later committed user input updates it in place. A residual
-`playback_ack_too_late` rejection is recorded as an artifact warning rather than failing the case. Clipped or cancelled
-outputs are ineligible and omitted from the official manifest; `audio_clipped_bytes` records output beyond the rounded video
-horizon.
+`playback_ack_too_late` rejection is recorded as an artifact warning rather than failing the case. When a barge-in model
+sends `output_audio_buffer.cleared`, the client flushes that response's unplayed audio from the serialized clock, as a live
+speaker would. Clipped, cancelled, or cleared-before-played outputs are ineligible and omitted from the official manifest
+(`audio_clipped`, `cancelled_response`, `cleared_response`), because their transcript holds more than the listener heard;
+`audio_clipped_bytes` records output beyond the rounded video horizon.
 
 Accuracy evaluation is opt-in and requires an already-running text judge with an OpenAI-compatible Chat Completions API. The
 benchmark does not launch or stop the judge server. Add the following options to the command above:
