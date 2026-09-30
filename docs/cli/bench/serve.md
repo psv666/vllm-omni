@@ -460,6 +460,25 @@ signal, not a transport failure. Accuracy must finish with `status=ok` on every 
 All Global IA-QTF1 is recomputed from pooled `Global_TP` / `Global_FP` / `Global_FN` and must be at or above
 `omniinteract_aggregate_min_ia_qtf1` (checked in as `0.2`).
 
+`test_qwen3_omni_duplex_omniinteract.json` runs Qwen3-Omni on `vllm_omni/deploy/qwen3_omni_duplex.yaml` with server VAD
+turns (see [Turn-based duplex models](#turn-based-duplex-models-qwen3-omni)). It needs three visible GPUs: the Qwen3-Omni
+stages take the first two and the text judge the third (`cuda_visible_devices: "2"`). Select it with
+`--label-substr qwen3_omni_duplex_omniinteract`. It differs from the MiniCPM-o configuration in three ways:
+
+- **Cold start.** The first request after the server starts compiles Triton kernels (rotary embedding, fused MoE) and
+  answers seconds late. The first subset (`1q1a_math`) therefore replays its first case once, unmeasured
+  (`num_warmups: 1`); later subsets reuse the warmed server and do not warm up again.
+- **Interrupted responses are not scored.** The official eligibility rule is kept: a case with a cancelled, cleared, or
+  clipped response is left out of accuracy, because its transcript holds text the listener never heard, and scoring it
+  would make the result incomparable with MiniCPM-o and the paper. Qwen3-Omni stops speaking when the next question
+  starts, which interrupts nearly every multi-question `1q1a` video and the assistant-led `1qna` videos. Those two
+  subsets are therefore latency-only (no `omniinteract_evaluate`), since a scored subset must keep at least one
+  eligible case. Accuracy covers `1q1a_math` only, so it is not comparable with the three-subset MiniCPM-o score. Its
+  IA-QTF1 must be at or above `omniinteract_aggregate_min_ia_qtf1` (checked in as `0.3`); a single run on four cases
+  measured `0.50`, so the floor catches a lost correct answer or more, not small judge noise.
+- **Latency.** Compare Qwen3-Omni runs on the per-response keys, primarily `mean_duplex_client_ttfp_ms` (end of turn to
+  first audio, including prompt preparation); the standard TTFT and TPOT rows do not describe this model.
+
 ### Video-MME Benchmark
 
 Video-MME (`--dataset-name videomme`) scores multiple-choice video QA. Default packing is
