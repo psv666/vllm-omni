@@ -163,20 +163,29 @@ async def run_realtime_seed_tts(request: RequestFuncInput) -> dict[str, Any]:
             # drift lands directly in the measured latency.
             deadline = started
             content_end = started
-            for offset in range(0, len(upload), chunk_bytes):
+            offset = 0
+            while offset < len(upload):
+                chunk_end = min(offset + chunk_bytes, len(upload))
+                if offset < content_bytes:
+                    # Keep the speech-end capture boundary exact even when the
+                    # reference length is not a multiple of the chunk duration.
+                    chunk_end = min(chunk_end, content_bytes)
+                chunk = upload[offset:chunk_end]
+                deadline += config.input_audio.duration_ms(len(chunk)) / 1000.0
+                # A microphone cannot send samples before it captures them.
+                # Sending first would expose one chunk of future silence to VAD.
+                await asyncio.sleep(max(0.0, deadline - time.monotonic()))
                 reraise_consumer_failure()
                 if events.errors():
                     raise RuntimeError(f"Realtime server error: {events.errors()[-1]}")
                 if vad and offset < content_bytes and events.count("response.created"):
                     raise RuntimeError("VAD split the reference audio before its end; comparison requires one turn")
-                chunk = upload[offset : offset + chunk_bytes]
-                await client.append_audio(chunk)
-                deadline += config.input_audio.duration_ms(len(chunk)) / 1000.0
                 if offset < content_bytes:
-                    # Wall clock at which this chunk's samples finish arriving:
-                    # the instant a live speaker would have stopped talking.
-                    content_end = max(deadline, time.monotonic())
-                await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+                    # Capture completion, before transport send overhead: the
+                    # final speech chunk is now ready and the speaker has stopped.
+                    content_end = time.monotonic()
+                await client.append_audio(chunk)
+                offset = chunk_end
             upload_finished = time.monotonic()
             explicit_trigger_sent = None
             if not vad:

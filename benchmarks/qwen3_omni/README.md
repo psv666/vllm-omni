@@ -21,7 +21,10 @@ user audio, rather than as `ref_audio` voice-cloning metadata. The instruction
 asks the model to read the target text, not transcribe or answer the audio.
 Reference audio is normalized once to mono 24 kHz PCM16 with a one-second silent
 tail (`SEED_TTS_SILENT_TAIL_MS`); both cases send the identical speech samples in
-200 ms chunks at real-time speed.
+chunks of at most 200 ms at real-time speed. Each chunk is sent at the end of its
+capture interval, so the server cannot consume future audio or silence. A chunk
+is split at the reference-speech boundary when needed, keeping that boundary
+exact for clips whose length is not a multiple of 200 ms.
 
 **Only VAD streams the silent tail.** The tail exists so server VAD can detect
 the endpoint, and its 800 ms silence threshold must stay shorter than the tail or
@@ -58,33 +61,41 @@ count, order, prompt, and generation settings across cases.
 
 ## Read the measurements
 
-Every timing below starts at the same client-side origin: immediately before the
-text item is submitted, and therefore **before** the paced audio upload. Both
-cases share that origin and the same input pacing, so they are comparable to each
-other.
+TTFT, audio TTFP, E2EL, and audio RTF share one client-side origin: the end of
+reference-speech capture, immediately before the last speech chunk is sent.
+They exclude session setup and the capture/upload intervals preceding that
+boundary. Both cases use the same speech samples and capture pacing, so their
+post-speech response timings are comparable.
 
-- **TTFT / audio TTFP:** origin to first text / first audio packet received. This
-  includes the real-time audio upload and, for VAD, endpoint detection, so the
-  absolute values are dominated by input delivery rather than by model latency.
+- **TTFT / audio TTFP:** origin to first non-empty text delta / first audio packet
+  received. This includes transport and response processing after the speech-end
+  boundary and, for VAD, endpoint detection during the silent tail.
 - **E2EL:** the same origin to `response.done` reception.
 - **Audio RTF:** origin to the last audio packet divided by output audio duration.
-  It includes input delivery; it is not model-only compute RTF.
+  It includes post-speech waiting and endpoint detection; it is not model-only
+  compute RTF.
 - **Audio duration:** generated audio length, received as PCM16.
 
-To separate input delivery and endpoint detection from the remaining response
-latency, read the per-request rows in `duplex_request_metrics`, which carry
-utterance identity, trigger, `input_audio_ms`, `input_upload_ms`,
-`session_setup_ms`, `input_content_end_to_first_audio_ms`,
-`explicit_commit_to_first_audio_ms` (explicit only), and
-`vad_stop_received_ms` / `vad_stop_to_first_audio_ms` (VAD only). The VAD pair
-starts at the client's receipt of `speech_stopped`, not at a server GPU timestamp.
+The per-request rows in `duplex_request_metrics` retain `measurement_origin`,
+utterance identity, trigger, and these diagnostic fields:
+
+- `input_audio_ms`: prepared clip duration, including the silent tail.
+- `input_content_ms`: reference-speech duration, excluding the tail.
+- `input_uploaded_ms`: audio duration actually sent; only VAD includes the tail.
+- `input_upload_ms` / `session_setup_ms`: client wall-clock upload / setup time.
+- `session_start_to_first_audio_ms` / `session_start_to_response_done_ms`:
+  timings from before text submission and audio upload, retained for diagnosis.
+- `explicit_commit_to_first_audio_ms` (explicit only): sending the explicit
+  trigger to receiving the first audio packet.
+- `vad_stop_received_ms` (VAD only): speech-end origin to the client's receipt of
+  `speech_stopped`.
+- `vad_stop_to_first_audio_ms` (VAD only): that event's receipt to the first audio
+  packet. Both VAD fields use client event timestamps, not server GPU timestamps.
 
 TTFT/TTFP here are client event timestamps. The server also attaches its own
 `response_request_metrics` to the first text delta, measured from "accepted
 native-append start" — a different origin, and one that is not defined for the
-VAD case at all. On one explicit turn — the first request against a cold
-server, so both numbers carry warmup — it reported `ttft_ms` 935 where the
-client observed 5616 for that same response. The MiniCPM-o Seed-TTS duplex benchmark
+VAD case at all. The MiniCPM-o Seed-TTS duplex benchmark
 (`test_minicpmo_4_5_duplex_seed_tts.json`) prefers those server values and
 derives TPOT from Stage-0 engine metrics. **The two configurations do not share
 a metric origin, so their TTFT/TTFP/RTF numbers are not comparable across
@@ -97,12 +108,20 @@ disables derived TPOT even if a tokenizer counts transcript tokens.
 `num_tpot_samples` stays `0`, so a configured TPOT baseline rejects the missing
 measurement instead of comparing a value derived from client response latency.
 
-Why the origin matters, recomputed both ways over the same four measured
-requests (2x L20X, warm):
+## Historical measurements before the capture-pacing fix
+
+The following numbers were collected on 2x L20X before chunks were moved to the
+end of their capture intervals. That sender gave the server up to one chunk of
+lookahead and could understate VAD endpoint latency by up to 200 ms. These are
+historical results, not measurements of the current sender; rerun both triggers
+before using them as a performance reference.
+
+The effect of choosing a timing origin was recomputed over the same four
+historical measured requests:
 
 | RTF origin | `explicit` mean | `vad` mean | worst single request |
 | --- | --- | --- | --- |
-| end of reference speech (used here) | 0.13 | 0.21 | 0.24 |
+| end of reference speech | 0.13 | 0.21 | 0.24 |
 | session start | 0.71 | 0.84 | 0.98 |
 
 Timing from session start does not fail the `< 1` SLO outright, but roughly 85%
@@ -129,9 +148,10 @@ Reference run, 2x L20X, one warmup then four requests at concurrency 1:
 | Mean audio RTF | 0.13 | 0.21 |
 | Mean E2EL | 1213 ms | 1864 ms |
 
-The roughly 600 ms that VAD adds is the endpoint it has to detect — the
-`silence_duration_ms` wait that an explicit commit skips. That difference is the
-measurement this configuration exists to produce. Note the spread within each
+The roughly 600 ms VAD difference in this historical run must not be interpreted
+as an unbiased measurement of the configured 800 ms silence threshold: the old
+sender made the first 200 ms of silence available at the speech-end origin.
+Current capture pacing removes that lookahead. Note the spread within each
 run (explicit median TTFT 54 ms against a mean of 347 ms): the first measured
 request is still paying warmup, so one `--num-warmups` is not enough to read
 per-request numbers, only the means.

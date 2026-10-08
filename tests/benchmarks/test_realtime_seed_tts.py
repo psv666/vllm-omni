@@ -24,11 +24,11 @@ _CONTENT_BYTES = 24_000 * _CONTENT_MS // 1000 * 2
 _TAIL_BYTES = 24_000 * realtime.SEED_TTS_SILENT_TAIL_MS // 1000 * 2
 
 
-def _wav() -> str:
+def _wav(content_ms: int = _CONTENT_MS) -> str:
     result = io.BytesIO()
     with wave.open(result, "wb") as audio:
         audio.setparams((1, 2, 24_000, 0, "NONE", "not compressed"))
-        audio.writeframes(b"\x01\x00" * (_CONTENT_BYTES // 2) + bytes(_TAIL_BYTES))
+        audio.writeframes(b"\x01\x00" * (24_000 * content_ms // 1000) + bytes(_TAIL_BYTES))
     return base64.b64encode(result.getvalue()).decode()
 
 
@@ -62,7 +62,8 @@ def client(monkeypatch):
         status = "completed"
         server_error = False
         early = False
-        split_on_last_content = False
+        respond_on_last_content = False
+        content_bytes = _CONTENT_BYTES
 
         def __init__(self, url, *, config, **kwargs):
             assert url.startswith("ws://") and "duplex=1" in url
@@ -70,6 +71,8 @@ def client(monkeypatch):
             self.session_id = "session-1"
             self.sent = []
             self.pcm = bytearray()
+            self.audio_chunks = []
+            self.started_at = time.monotonic()
             self.queue: asyncio.Queue = asyncio.Queue()
             self.closed = False
             self.answered = False
@@ -120,17 +123,17 @@ def client(monkeypatch):
 
         async def append_audio(self, pcm):
             self.pcm.extend(pcm)
-            # Server VAD only settles once the silent tail has arrived.
+            self.audio_chunks.append((len(pcm), time.monotonic()))
+            # A real server can trigger as soon as its silence threshold is
+            # reached; waiting for the whole tail hides one-chunk lookahead.
             if self.config.turn_detection and not self.answered:
                 if self.early:
                     self.answer()
-                elif self.split_on_last_content and len(self.pcm) >= _CONTENT_BYTES:
-                    # Splits exactly on the final content chunk. The in-loop
-                    # guard checks at the top of the next iteration, which is
-                    # already a tail chunk, so only the negative-TTFP check
-                    # can catch this.
+                elif self.respond_on_last_content and len(self.pcm) >= self.content_bytes:
                     self.answer()
-                elif len(self.pcm) >= _CONTENT_BYTES + _TAIL_BYTES:
+                elif len(self.pcm) >= self.content_bytes + self.config.input_audio.byte_count(
+                    self.config.turn_detection["silence_duration_ms"]
+                ):
                     self.answer()
 
         async def commit(self, **kwargs):
@@ -151,7 +154,7 @@ def client(monkeypatch):
     return Client
 
 
-def _request(trigger):
+def _request(trigger, *, content_ms: int = _CONTENT_MS):
     """Build the real RequestFuncInput the backend receives, extras attached
     the same way ``_attach_seed_tts_to_request_func_input`` attaches them."""
     request = RequestFuncInput(
@@ -163,7 +166,7 @@ def _request(trigger):
         model_name="qwen",
         extra_body={"realtime_trigger": trigger},
     )
-    request.seed_tts_input_audio = _wav()
+    request.seed_tts_input_audio = _wav(content_ms)
     request.seed_tts_system_prompt = "Read exactly."
     request.seed_tts_utterance_id = "utt0"
     return request
@@ -173,6 +176,48 @@ def test_vad_silence_threshold_fits_inside_the_dataset_tail():
     # The module asserts this at import; pin it so lowering the dataset tail
     # cannot silently leave VAD unable to ever detect the endpoint.
     assert realtime._VAD_SILENCE_MS < realtime.SEED_TTS_SILENT_TAIL_MS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["explicit", "vad"])
+@pytest.mark.parametrize("content_ms", [_CONTENT_MS, 450])
+async def test_audio_chunks_are_sent_after_capture_and_split_at_speech_end(client, trigger, content_ms):
+    client.content_bytes = 24_000 * content_ms // 1000 * 2
+    output = await realtime.run_realtime_seed_tts(_request(trigger, content_ms=content_ms))
+    instance = client.instances[-1]
+    captured_bytes = 0
+    speech_ends = []
+    for size, sent_at in instance.audio_chunks:
+        captured_bytes += size
+        assert size <= instance.config.input_audio.byte_count(realtime._CHUNK_MS)
+        # A chunk cannot be delivered before its samples would be captured.
+        assert sent_at - instance.started_at == pytest.approx(captured_bytes / (24_000 * 2))
+        if captured_bytes == client.content_bytes:
+            speech_ends.append(sent_at - instance.started_at)
+    assert speech_ends == pytest.approx([content_ms / 1000])
+    metrics = output["duplex_request_metrics"][0]
+    assert metrics["input_content_ms"] == content_ms
+    assert metrics["input_uploaded_ms"] == content_ms + (realtime.SEED_TTS_SILENT_TAIL_MS if trigger == "vad" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("silence_ms", [400, 800])
+async def test_vad_triggers_at_its_silence_threshold_without_lookahead(client, monkeypatch, silence_ms):
+    monkeypatch.setattr(realtime, "_VAD_SILENCE_MS", silence_ms)
+    output = await realtime.run_realtime_seed_tts(_request("vad"))
+    metrics = output["duplex_request_metrics"][0]
+    assert metrics["vad_stop_received_ms"] == pytest.approx(silence_ms)
+    assert metrics["ttfp_ms"] == pytest.approx(silence_ms)
+
+
+@pytest.mark.asyncio
+async def test_response_at_completed_speech_boundary_is_not_an_early_split(client):
+    # The last speech chunk now arrives at the speech-end timestamp, rather
+    # than one capture interval before it. A response at that boundary is valid.
+    client.respond_on_last_content = True
+    output = await realtime.run_realtime_seed_tts(_request("vad"))
+    assert output["audio_ttfp"] == pytest.approx(0.0)
+    assert client.instances[-1].closed
 
 
 @pytest.mark.asyncio
@@ -291,7 +336,6 @@ async def test_latency_origin_is_end_of_reference_speech(client, trigger):
         ("failed", "did not complete"),
         ("error", "server error"),
         ("early", "split the reference"),
-        ("split_on_last_content", "before the reference speech ended"),
     ],
 )
 async def test_invalid_comparison_releases_session(client, fault, match):
@@ -299,7 +343,6 @@ async def test_invalid_comparison_releases_session(client, fault, match):
     client.status = "failed" if fault == "failed" else "completed"
     client.server_error = fault == "error"
     client.early = fault == "early"
-    client.split_on_last_content = fault == "split_on_last_content"
     with pytest.raises(RuntimeError, match=match):
         await realtime.run_realtime_seed_tts(_request("vad"))
     assert client.instances[-1].closed
