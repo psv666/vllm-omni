@@ -4,11 +4,6 @@ This directory contains benchmark suites for evaluating different model families
 
 ## Benchmark families
 
-### [Qwen3-Omni](qwen3_omni/README.md) — Seed-TTS Realtime Turn-Trigger Performance
-
-Matched audio and text over explicit-commit Realtime turns and server-VAD
-Realtime turns, with client-observed text/audio latency and RTF.
-
 ### [Qwen2.5-Omni](qwen2_5_omni/README.md) — Embedding Wrapper Latency
 
 CPU-observed A/B timings for redundant text embedding removal, with real checkpoint
@@ -80,6 +75,9 @@ Accuracy benchmarks for image generation/editing models, adapting external suite
 - **Throughput**: request throughput, output token throughput, total token throughput, audio throughput
 
 See `vllm_omni/benchmarks/serve.py` for the `vllm bench serve --omni` runner wrapper and `vllm_omni/benchmarks/metrics/` for Omni metric definitions.
+
+The [Qwen3-Omni Seed-TTS Realtime comparison](../docs/cli/bench/serve.md#seed-tts-reference-speech-as-real-audio-input)
+uses this framework to compare explicit-commit and server-VAD turns.
 
 ## Adding a new benchmark
 
