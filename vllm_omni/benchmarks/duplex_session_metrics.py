@@ -31,12 +31,12 @@ _REQUEST_MEASUREMENT_ORIGIN = {
 }
 _CLIENT_MEASUREMENT_ORIGIN = {
     "client_ttft": (
-        "response.created client receive to first non-empty text delta; unlike ttft, includes server prompt "
-        "preparation and engine submission"
+        "response.created client receive to first non-empty text delta; includes server prompt preparation "
+        "and engine submission when they follow response creation, as in Qwen3-Omni"
     ),
     "client_ttfp": (
-        "response.created client receive to first audio packet; unlike ttfp, includes server prompt "
-        "preparation and engine submission"
+        "response.created client receive to first audio packet; includes server prompt preparation "
+        "and engine submission when they follow response creation, as in Qwen3-Omni"
     ),
 }
 _TEXT_DELTA_TYPES = frozenset(
@@ -89,10 +89,10 @@ def _client_response_latencies(
 ) -> tuple[float | None, float | None]:
     """Client-observed ``response.created`` to first text and first audio, in ms.
 
-    A server TTFT starts once the engine accepted the request, so it leaves out
-    the server's own prompt preparation (for Qwen3-Omni: decoding the retained
-    images, the chat template, multimodal preprocessing). These start where
-    the client learns a response exists.
+    These timers start when the client learns a response exists. Qwen3-Omni
+    creates the response before prompt preparation and engine submission, so
+    that work is included. Model-native duplex may create the response only
+    with the first output; its earlier preparation is then excluded.
     """
     created_at_s: float | None = None
     first_text_at_s: float | None = None

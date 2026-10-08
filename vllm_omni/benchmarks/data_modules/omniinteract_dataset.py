@@ -567,9 +567,10 @@ def _case_from_video_list_row(row: dict[str, object], *, line_no: int) -> OmniIn
         )
     else:
         by_path = {case.video_path.resolve(): case for case in _mapping_cases(subset_root, subset)}
-        case = by_path.get(video_path)
-        if case is None:
+        mapped_case = by_path.get(video_path)
+        if mapped_case is None:
             raise ValueError(f"OmniInteract video_list line {line_no} is not in {subset} mapping: {video_path}")
+        case = mapped_case
 
     expected_name = str(row.get("output_name") or "")
     if expected_name and expected_name != official_output_name(case):
