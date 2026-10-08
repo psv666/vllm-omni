@@ -462,9 +462,20 @@ All Global IA-QTF1 is recomputed from pooled `Global_TP` / `Global_FP` / `Global
 `omniinteract_aggregate_min_ia_qtf1` (checked in as `0.2`).
 
 `test_qwen3_omni_duplex_omniinteract.json` runs Qwen3-Omni on `vllm_omni/deploy/qwen3_omni_duplex.yaml` with server VAD
-turns (see [Turn-based duplex models](#turn-based-duplex-models-qwen3-omni)). It needs three visible GPUs: the Qwen3-Omni
-stages take the first two and the text judge the third (`cuda_visible_devices: "2"`). Select it with
-`--label-substr qwen3_omni_duplex_omniinteract`. It differs from the MiniCPM-o configuration in three ways:
+turns (see [Turn-based duplex models](#turn-based-duplex-models-qwen3-omni)). It is an L4 CUDA nightly performance job
+on H100 and the B200 mirror. It needs three visible GPUs: the Qwen3-Omni stages take the first two and the text judge
+the third (`cuda_visible_devices: "2"`). Run the same job locally with:
+
+```bash
+bash tools/nightly/run_nightly_jobs.sh \
+  --test-type perf \
+  --model-type omni \
+  --label-substr "Duplex OmniInteract"
+```
+
+The job uploads benchmark JSONs and per-case audio, transcripts, events, and evaluation artifacts. It records performance
+metrics without a hardware latency baseline; response validity and the math accuracy floor still gate the result.
+It differs from the MiniCPM-o configuration in three ways:
 
 - **Cold start.** The first request after the server starts compiles Triton kernels (rotary embedding, fused MoE) and
   answers seconds late. The first subset (`1q1a_math`) therefore replays its first case once, unmeasured
