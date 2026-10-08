@@ -345,9 +345,10 @@ length because input is paced in real time.
 
 The server timer starts only after the model plugin prepared the prompt and the engine accepted it, so it leaves out
 prompt preparation; for Qwen3-Omni that is decoding the retained images, the chat template, and multimodal
-preprocessing. With server VAD, `response.created` arrives within a few milliseconds of the VAD end of turn, so the
-client keys are the end-of-turn to first-output latency. The server start point differs between model plugins, so
-compare server keys only within one model; the VAD `silence_duration_ms` (500 ms by default) comes on top of both.
+preprocessing. The client timer starts when `response.created` is received, after the server detects the end of the
+turn. It excludes VAD silence detection and any delay before that event arrives, so it does not measure the full
+user-speech-end to first-output latency. The server start point differs between model plugins, so compare server
+keys only within one model. VAD uses `silence_duration_ms: 500` by default.
 Qwen3-Omni duplex reports no per-token timing, so TPOT and ITL are unavailable. A turn-based model acknowledges a proactive request right away but does not speak again when the
 event later happens, so proactive and 1QnA scenarios score low by construction.
 
@@ -471,13 +472,16 @@ stages take the first two and the text judge the third (`cuda_visible_devices: "
 - **Interrupted responses are not scored.** The official eligibility rule is kept: a case with a cancelled, cleared, or
   clipped response is left out of accuracy, because its transcript holds text the listener never heard, and scoring it
   would make the result incomparable with MiniCPM-o and the paper. Qwen3-Omni stops speaking when the next question
-  starts, which interrupts nearly every multi-question `1q1a` video and the assistant-led `1qna` videos. Those two
-  subsets are therefore latency-only (no `omniinteract_evaluate`), since a scored subset must keep at least one
-  eligible case. Accuracy covers `1q1a_math` only, so it is not comparable with the three-subset MiniCPM-o score. Its
+  starts, so overlapping questions can make a case ineligible. A scored subset must keep at least one eligible case.
+  This configuration measures latency only for `1q1a` and `1qna` (no `omniinteract_evaluate`); individual cases may
+  still be eligible. Both subsets require at least one completed response with audio and transcript per case
+  (`omniinteract_require_response: true`). Accuracy covers `1q1a_math` only, so it is not comparable with the
+  three-subset MiniCPM-o score. Its
   IA-QTF1 must be at or above `omniinteract_aggregate_min_ia_qtf1` (checked in as `0.3`); a single run on four cases
   measured `0.50`, so the floor catches a lost correct answer or more, not small judge noise.
-- **Latency.** Compare Qwen3-Omni runs on the per-response keys, primarily `mean_duplex_client_ttfp_ms` (end of turn to
-  first audio, including prompt preparation); the standard TTFT and TPOT rows do not describe this model.
+- **Latency.** Compare Qwen3-Omni runs on the per-response keys, primarily `mean_duplex_client_ttfp_ms`
+  (`response.created` received to first audio, including prompt preparation); the standard TTFT rows average sessions
+  first, and TPOT is unavailable.
 
 ### Video-MME Benchmark
 

@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -287,7 +287,7 @@ class _Playback:
                 continue
             start = max(events.event_received_at_s[index], self.end_s)
             samples = len(raw) // PCM16_BYTES_PER_SAMPLE
-            segment = _AudioSegment(index, response_id, start, start + samples / rate, raw)
+            segment = _AudioSegment(index, response_id, start, start + samples / OUTPUT_SAMPLE_RATE, raw)
             self.segments.append(segment)
             self.end_s = segment.end_s
             self._total_samples[response_id] = self._total_samples.get(response_id, 0) + samples
@@ -436,9 +436,12 @@ def response_ledger(
             raise ValueError(f"response.done without response.created for {response_id}")
         if response_id in done:
             raise ValueError(f"duplicate response.done for {response_id}")
-        response = event.get("response") if isinstance(event.get("response"), dict) else {}
-        details = event.get("status_details") if isinstance(event.get("status_details"), dict) else {}
-        nested = response.get("status_details") if isinstance(response.get("status_details"), dict) else {}
+        response_value = event.get("response")
+        response = response_value if isinstance(response_value, dict) else {}
+        details_value = event.get("status_details")
+        details = details_value if isinstance(details_value, dict) else {}
+        nested_value = response.get("status_details")
+        nested = nested_value if isinstance(nested_value, dict) else {}
         if "failed" in {event.get("status"), response.get("status"), details.get("type"), nested.get("type")}:
             raise ValueError(f"response.done reports failure for {response_id}")
         done.add(response_id)
@@ -678,7 +681,10 @@ def _atomic_replace(path: Path, writer: Callable[[Path], None]) -> None:
 
 
 def _atomic_write_text(path: Path, value: str) -> None:
-    _atomic_replace(path, lambda temporary: temporary.write_text(value, encoding="utf-8"))
+    def write(temporary: Path) -> None:
+        temporary.write_text(value, encoding="utf-8")
+
+    _atomic_replace(path, write)
 
 
 def _atomic_write_json(path: Path, value: object) -> None:
@@ -1114,6 +1120,8 @@ def _wants_annotation_video_clock(client: _RealtimeSession) -> bool:
     required = caps.get("required_input_modalities") or ()
     if isinstance(required, str):
         required = (required,)
+    if not isinstance(required, Iterable):
+        return False
     try:
         video_required = "video" in {str(item) for item in required}
     except TypeError:
@@ -1153,6 +1161,7 @@ async def run_omniinteract_case(
     )
     started_at = time.monotonic()
     try:
+        frames: Sequence[str | None]
         if prepared_input is None:
             from vllm_omni.clients.duplex import reference_audio_data_url
 
