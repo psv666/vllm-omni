@@ -3166,6 +3166,10 @@ async def async_request_openai_realtime_chat(
 
     del session
     output = MixRequestFuncOutput()
+    # This backend observes client response timings, not engine token timings.
+    # Tokenizer fallback must not turn those timings into TPOT samples.
+    output.tpot_measured = False
+    output.output_tokens = 0
     output.prompt_len = request_func_input.prompt_len
     output.start_time = time.perf_counter()
     try:

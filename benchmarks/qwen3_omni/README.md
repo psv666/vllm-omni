@@ -92,9 +92,10 @@ models.**
 
 TPOT/ITL are not reported here, and cannot currently be: this path returns
 `stage_metrics: {}` on every delta (verified against a live Qwen3-Omni duplex
-server), so there is no engine token timing to read. `num_tpot_samples` is
-therefore `0`, which is what a configured TPOT baseline would trip on rather
-than silently comparing a value derived from `latency - ttft`.
+server), so there is no engine token timing to read. The backend explicitly
+disables derived TPOT even if a tokenizer counts transcript tokens.
+`num_tpot_samples` stays `0`, so a configured TPOT baseline rejects the missing
+measurement instead of comparing a value derived from client response latency.
 
 Why the origin matters, recomputed both ways over the same four measured
 requests (2x L20X, warm):

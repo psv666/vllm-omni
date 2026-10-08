@@ -177,6 +177,49 @@ def test_vad_silence_threshold_fits_inside_the_dataset_tail():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trigger", ["explicit", "vad"])
+async def test_realtime_chat_does_not_derive_token_timings(client, trigger):
+    from unittest.mock import MagicMock
+
+    from vllm.benchmarks.serve import TaskType
+
+    from vllm_omni.benchmarks.metrics.metrics import calculate_metrics
+    from vllm_omni.benchmarks.patch.patch import async_request_openai_realtime_chat
+
+    output = await async_request_openai_realtime_chat(_request(trigger), session=None)
+    assert output.success, output.error
+    assert output.generated_text == "target text"
+    assert output.output_tokens == 0
+    assert output.tpot_measured is False
+    assert output.itl == []
+    assert client.instances[-1].closed
+
+    # A tokenizer can count transcript tokens, but that does not provide engine
+    # decode timing. Even a future text-latency value must not enable TPOT.
+    tokenizer = MagicMock()
+    tokenizer.return_value.input_ids = [1, 2, 3]
+    output.ttft = 0.1
+    output.text_latency = 0.3
+    metrics, output_lens = calculate_metrics(
+        input_requests=[],
+        outputs=[output],
+        dur_s=1.0,
+        tokenizer=tokenizer,
+        selected_percentiles=[50.0],
+        goodput_config_dict={"tpot": float("inf")},
+        task_type=TaskType.GENERATION,
+        selected_percentile_metrics=["tpot", "itl"],
+        max_concurrency=None,
+        request_rate=float("inf"),
+        benchmark_duration=1.0,
+    )
+    assert output_lens == [3]
+    assert metrics.num_tpot_samples == 0
+    assert metrics.num_itl_samples == 0
+    assert metrics.request_goodput == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["explicit", "vad"])
 async def test_matched_audio_and_trigger_contract(client, trigger):
     request = _request(trigger)
     output = await realtime.run_realtime_seed_tts(request)
@@ -235,9 +278,7 @@ async def test_latency_origin_is_end_of_reference_speech(client, trigger):
         assert realtime._VAD_SILENCE_MS <= metrics["ttfp_ms"] < realtime.SEED_TTS_SILENT_TAIL_MS + realtime._CHUNK_MS
         assert metrics["vad_stop_received_ms"] >= realtime._VAD_SILENCE_MS
         assert metrics["vad_stop_to_first_audio_ms"] < _CONTENT_MS
-    # E2EL must share TTFT's origin: upstream derives TPOT from their
-    # difference whenever the backend reports no engine token count, so an
-    # E2EL still anchored at session start would inflate TPOT by the upload.
+    # E2EL must share TTFT's speech-end origin so both exclude input upload.
     assert output["latency"] * 1000 < metrics["session_start_to_response_done_ms"]
     assert output["latency"] >= output["ttft"]
 

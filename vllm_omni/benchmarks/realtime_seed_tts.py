@@ -255,10 +255,10 @@ async def run_realtime_seed_tts(request: RequestFuncInput) -> dict[str, Any]:
             assert finished is not None
             metrics["session_start_to_response_done_ms"] = (finished - started) * 1000
             output = {
-                # E2EL shares TTFT's origin on purpose: ``calculate_metrics``
-                # derives TPOT as ``(latency - ttft) / (output_tokens - 1)``
-                # whenever the backend reports no engine token count, and
-                # mixing origins there would inflate it by the whole upload.
+                # E2EL shares TTFT's speech-end origin so both describe the
+                # user's wait after speaking, without the paced input upload.
+                # Engine token timing is unavailable; the backend wrapper
+                # explicitly disables derived TPOT.
                 # ``start_time`` moves with it so ``start_time + latency``
                 # stays a real wall-clock interval.
                 "start_time": request_started_perf + (content_end - started),
