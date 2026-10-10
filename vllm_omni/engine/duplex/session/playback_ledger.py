@@ -132,11 +132,13 @@ def apply_playback_ack(session: DuplexEngineSession, event: dict[str, object]) -
             }
         )
     ]
-    # A late full ACK cannot retire evidence for a permanently truncated reply:
-    # a later, stricter truncate still needs its snapshot and playback cursor.
+    # ACKing all audio generated so far does not complete a cancelled reply.
+    # A late full ACK also cannot retire evidence for a permanently truncated
+    # reply: a stricter truncate still needs its snapshot and playback cursor.
     if (
         committed_history
         and response_id is not None
+        and playback.audio_complete
         and session.history_audio_cutoff(response_id) >= max(playback.sent_ms, playback.generated_ms)
     ):
         session.release_response_playback(response_id)

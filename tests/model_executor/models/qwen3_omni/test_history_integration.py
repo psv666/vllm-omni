@@ -201,6 +201,50 @@ async def test_late_full_ack_preserves_calibrated_reply_for_stricter_truncate(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("requires_audio", [True, False])
+@pytest.mark.parametrize("start_next_before_truncate", [True, False])
+async def test_duplicate_full_ack_preserves_cancelled_reply_for_stricter_truncate(
+    requires_audio, start_next_before_truncate
+):
+    cutoffs = []
+
+    async def calibrate(snapshot):
+        cutoffs.append(snapshot.played_ms)
+        return len("Hello") if snapshot.played_ms >= 10000 else len("He")
+
+    h = await open_qwen(calibrate=calibrate, requires_audio=requires_audio)
+    try:
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        request = h.port.submissions[-1].context.request_id
+        response = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request, samples=0, text=TEXT, finished=True), stage_id=0)
+        await h.deliver_and_settle(tts_output(request, samples=240000, finished=False), stage_id=2)
+        await h.run(AckPlayback(response_id=response, played_ms=10000))
+        await h.run(CancelResponse())
+        controller = h.runner.ctx.history_calibration
+        await controller.before_prompt()
+        assert h.session.history[-1]["content"] == "Hello"
+
+        await h.run(AckPlayback(response_id=response, played_ms=10000))
+        if start_next_before_truncate:
+            await h.run(append_audio())
+            await h.run(Commit(final=True, create_response=True))
+        await h.run(TruncateItem(item_id=f"item_{response}", audio_end_ms=5000))
+        await controller.before_prompt()
+        assert [m for m in h.session.history if m["role"] == "assistant"] == [{"role": "assistant", "content": "He"}]
+        if not start_next_before_truncate:
+            await h.run(append_audio())
+            await h.run(Commit(final=True, create_response=True))
+            messages = ast.literal_eval(h.port.submissions[-1].prompt["prompt"])
+            assert [m for m in messages if m["role"] == "assistant"] == [{"role": "assistant", "content": "He"}]
+        assert cutoffs == [10000, 5000]
+        assert h.session.history_audio_cutoff(response) == 5000
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_deleted_reply_cannot_be_resurrected_by_async_result():
     entered, release = asyncio.Event(), asyncio.Event()
 
