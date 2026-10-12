@@ -29,8 +29,9 @@
         "dataset_name": "seed-tts",
         "dataset_path": "zhaochenyang20/seed-tts-eval",
         "num_prompts": [
-          4
+          32
         ],
+        "num_warmups": 2,
         "max_concurrency": [
           1
         ],
@@ -53,8 +54,9 @@
         "dataset_name": "seed-tts",
         "dataset_path": "zhaochenyang20/seed-tts-eval",
         "num_prompts": [
-          4
+          32
         ],
+        "num_warmups": 2,
         "max_concurrency": [
           1
         ],

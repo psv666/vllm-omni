@@ -120,7 +120,7 @@ steps:
           - pytest -s -v tests/dfx/perf/scripts/run_benchmark.py --test-config-file tests/dfx/perf/tests/test_minicpmo_4_5.json -m "H100 and B200 and cards_1"
 
       - label: ":full_moon: Omni · Qwen3-Omni · Seed-TTS Realtime Perf Test"
-        source_file_dependencies: omni_qwen3_omni_perf
+        source_file_dependencies: omni_qwen3_omni_seed_tts_perf
         key: nightly-omni-performance-qwen3-seed-tts
         timeout_in_minutes: 180
         artifact_paths:

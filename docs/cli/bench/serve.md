@@ -461,9 +461,9 @@ timestamp stays exact even when the clip length is not a multiple of 200 ms. `re
 #### Run the matched nightly workload
 
 The [performance configuration](gh-file:tests/dfx/perf/tests/test_qwen3_omni_seed_tts.json) runs both triggers using the
-first four English Seed-TTS entries in fixed order, concurrency 1, temperature 0, and a 256-token output limit. It asks
-the model to read the target text rather than answer or transcribe the accompanying audio. Benchmark warmup runs
-separately from the four measured requests. The CUDA nightly job runs this configuration on two H100/B200 GPUs.
+first 32 English Seed-TTS entries in fixed order, concurrency 1, temperature 0, and a 256-token output limit. It asks
+the model to read the target text rather than answer or transcribe the accompanying audio. Each trigger runs two
+unmeasured warmup requests before its 32 measured requests. The CUDA nightly job runs this configuration on two H100/B200 GPUs.
 
 Run from the repository environment after reserving two GPUs according to your host's scheduling rules:
 
@@ -516,9 +516,11 @@ speech-start and speech-stop events; a response before the reference speech ends
 contract requires interruption flags, this workload sends no overlapping speech. It does not measure interruptions,
 multi-turn context, or concurrency scaling.
 
-Four requests are a small smoke test rather than a stable latency study, and no performance regression baseline is set.
-The earlier L20X numbers in [the original PR](gh-pr:8060) predate the capture-pacing fix and could understate VAD latency
-by up to one 200 ms chunk. Rerun both triggers before using those historical numbers as a performance reference.
+The job currently collects latency measurements and checks request completion; no performance regression baseline is set.
+Even with 32 requests, p99 is a diagnostic rather than a stable regression threshold. After collecting repeated successful
+H100 nightly runs with this configuration, a follow-up can set a separate baseline for each trigger. B200 requires its own
+measurements. Results from before the capture-pacing fix could understate VAD latency by up to one 200 ms chunk and must
+not be used as the corrected workload's performance reference.
 
 ### Video-MME Benchmark
 
