@@ -555,7 +555,13 @@ class DuplexSessionRunner:
         elif event_type in {"input_audio_buffer.commit", "input.commit", "response.create"}:
             await self._on_commit(payload)
         elif event_type == "playback.ack":
-            self._emit_events(playback_ledger.apply_playback_ack(self.session, payload))
+            self._emit_events(
+                playback_ledger.apply_playback_ack(
+                    self.session,
+                    payload,
+                    require_audio_complete=self.ctx.history_calibration is not None,
+                )
+            )
         elif event_type in _CANCEL_EVENTS:
             await self._on_cancel(payload)
         elif event_type == "turn.signal":
@@ -632,7 +638,13 @@ class DuplexSessionRunner:
         elif isinstance(command, UpdateSession):
             await self.control.on_session_update(dict(command.patch), realtime_event_id=command.event_id)
         elif isinstance(command, AckPlayback):
-            self._emit_events(playback_ledger.apply_playback_ack(self.session, command.payload()))
+            self._emit_events(
+                playback_ledger.apply_playback_ack(
+                    self.session,
+                    command.payload(),
+                    require_audio_complete=self.ctx.history_calibration is not None,
+                )
+            )
         elif isinstance(command, Heartbeat):
             self._on_heartbeat(command)
         elif isinstance(command, CreateItem):

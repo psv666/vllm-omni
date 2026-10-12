@@ -19,8 +19,13 @@ from vllm_omni.engine.duplex.session.engine_session import DuplexEngineSession
 from vllm_omni.engine.duplex.session.lease import DuplexLeaseActivity
 
 
-def apply_playback_ack(session: DuplexEngineSession, event: dict[str, object]) -> list[DuplexEvent]:
-    """Apply one ``playback.ack`` and return the events it produces."""
+def apply_playback_ack(
+    session: DuplexEngineSession,
+    event: dict[str, object],
+    *,
+    require_audio_complete: bool = False,
+) -> list[DuplexEvent]:
+    """Apply an ACK, retaining incomplete replies when calibration is enabled."""
     played_ms = event.get("played_ms", event.get("audio_ms", 0))
     committed_ms = event.get("committed_ms")
     if not isinstance(played_ms, int | float):
@@ -132,15 +137,14 @@ def apply_playback_ack(session: DuplexEngineSession, event: dict[str, object]) -
             }
         )
     ]
-    # ACKing all audio generated so far does not complete a cancelled reply.
-    # A late full ACK also cannot retire evidence for a permanently truncated
-    # reply: a stricter truncate still needs its snapshot and playback cursor.
-    if (
-        committed_history
-        and response_id is not None
-        and playback.audio_complete
-        and session.history_audio_cutoff(response_id) >= max(playback.sent_ms, playback.generated_ms)
-    ):
-        session.release_response_playback(response_id)
-        session.release_response_history_snapshot(response_id)
+    if committed_history and response_id is not None:
+        # Calibration needs the original reply and cursor even before its
+        # first result. Keep that evidence for incomplete or hard-capped audio;
+        # sessions without calibration retain their existing ACK cleanup.
+        retirement_cursor = session.history_audio_cutoff(response_id) if require_audio_complete else committed_cursor
+        if (not require_audio_complete or playback.audio_complete) and retirement_cursor >= max(
+            playback.sent_ms, playback.generated_ms
+        ):
+            session.release_response_playback(response_id)
+            session.release_response_history_snapshot(response_id)
     return events

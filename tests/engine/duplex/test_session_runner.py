@@ -859,6 +859,73 @@ async def test_cancel_response_aborts_the_stage_request_and_reports_playback() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("aligned", [True, False])
+@pytest.mark.parametrize("hard_cutoff_ms", [None, 500])
+async def test_full_ack_releases_cancelled_replies_without_history_calibration(aligned, hard_cutoff_ms) -> None:
+    h = await open_harness()
+    try:
+        assert h.runner.ctx.history_calibration is None
+        for _ in range(8):
+            await h.run(append_audio())
+            await h.deliver_and_settle(
+                tts_output(h.stage0_request_id(), samples=24000, text="hello", epoch=h.session.epoch)
+            )
+            response = h.session.active_response_id
+            assert response is not None
+            if not aligned:
+                # Exercise the proportional fallback for outputs without alignment.
+                h.session._response.assistant_audio_text_marks.clear()
+            await h.run(commands.CancelResponse())
+            assert not h.session.playback_for_response(response).audio_complete
+            if hard_cutoff_ms is not None:
+                await h.run(commands.TruncateItem(item_id=f"item_{response}", audio_end_ms=hard_cutoff_ms))
+            events = await h.run(commands.AckPlayback(response_id=response, played_ms=1000))
+            assert find(events, "playback.acknowledged").details["history_committed"]
+            assert not h.session._conversation.assistant_response_snapshots
+            assert not h.session._playback.by_response
+            assert not h.session._conversation.hard_truncations_ms
+        expected_text = "hello" if hard_cutoff_ms is None else "he"
+        assert [message["content"] for message in h.session.history] == [expected_text] * 8
+    finally:
+        await close_harness(h)
+
+
+@pytest.mark.asyncio
+async def test_full_ack_preserves_cancelled_reply_while_history_calibration_is_pending() -> None:
+    from vllm_omni.engine.duplex.session.history_calibration import HistoryCalibration
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def calibrate(snapshot):
+        entered.set()
+        await release.wait()
+        return 2
+
+    h = await open_harness()
+    controller = HistoryCalibration(h.session, calibrate, requires_audio=False)
+    h.runner.ctx.history_calibration = controller
+    try:
+        await h.run(append_audio())
+        await h.deliver_and_settle(tts_output(h.stage0_request_id(), samples=24000, text="hello"))
+        response = h.session.active_response_id
+        assert response is not None
+        await h.run(commands.AckPlayback(response_id=response, played_ms=1000))
+        await h.run(commands.CancelResponse())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert not h.session._conversation.heard_prefixes
+        await h.run(commands.AckPlayback(response_id=response, played_ms=1000))
+        assert response in h.session._conversation.assistant_response_snapshots
+        assert response in h.session._playback.by_response
+        assert response in controller.tasks
+        release.set()
+        await controller.before_prompt()
+        assert h.session.history[-1]["content"] == "he"
+    finally:
+        release.set()
+        await close_harness(h)
+
+
+@pytest.mark.asyncio
 async def test_cancel_response_absorbs_a_response_task_that_outlives_the_wait() -> None:
     """The 0.25 s wait after cancelling the response task may time out.
 
@@ -1558,7 +1625,7 @@ async def test_duplex_stage_request_stamps_wall_clock_request_timestamp() -> Non
         await orchestrator.session_manager.shutdown()
 
 
-def _response_request_metrics_of(event: object) -> dict[str, object]:
+def _response_request_metrics_of(event: DuplexEvent) -> dict[str, object]:
     """Server request-start clocks as the client reads them off one wire event."""
     payload = event.to_realtime()
     metadata = payload.get("metadata")

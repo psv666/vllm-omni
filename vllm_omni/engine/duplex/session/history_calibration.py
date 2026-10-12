@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+_MAX_RETAINED_REPLIES = 4
+
 
 @dataclass(frozen=True)
 class HeardTextSnapshot:
@@ -125,7 +127,7 @@ class HistoryCalibration:
             item.chunks.clear()
             item.size = 0
         # Never retain a suffix and pretend it starts at zero. Evict whole replies.
-        while self.retained_bytes > self.max_bytes or len(self.audio) > 4:
+        while self.retained_bytes > self.max_bytes or len(self.audio) > _MAX_RETAINED_REPLIES:
             evicted_id = next(iter(self.audio))
             logger.info("Duplex history cache response=%s reason=evicted", evicted_id)
             self.discard(evicted_id)
