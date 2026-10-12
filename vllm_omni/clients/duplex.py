@@ -40,7 +40,7 @@ import random
 import time
 import wave
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -1127,7 +1127,12 @@ class DuplexClientBase(ABC):
 
 
 class DuplexClient(DuplexClientBase):
-    """Async client for one duplex session over ``/v1/realtime?duplex=1``."""
+    """Async client for one duplex session over ``/v1/realtime?duplex=1``.
+
+    ``extra_headers`` are sent on initial and resumed WebSocket handshakes by
+    the built-in transport. A custom ``connect`` callback owns its connection
+    options, including headers.
+    """
 
     def __init__(
         self,
@@ -1135,6 +1140,7 @@ class DuplexClient(DuplexClientBase):
         *,
         model: str,
         config: SessionConfig | None = None,
+        extra_headers: Mapping[str, str] | None = None,
         reconnect: ReconnectPolicy | None = ReconnectPolicy(),
         heartbeat_interval_s: float | None = 30.0,
         handshake_timeout_s: float = 30.0,
@@ -1142,6 +1148,7 @@ class DuplexClient(DuplexClientBase):
     ) -> None:
         super().__init__(model=model, config=config, handshake_timeout_s=handshake_timeout_s)
         self.url = url
+        self._extra_headers = dict(extra_headers) if extra_headers is not None else None
         self.resume_token: str | None = None
         self._reconnect = reconnect
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -1205,7 +1212,7 @@ class DuplexClient(DuplexClientBase):
         except ImportError as exc:  # pragma: no cover - websockets is a pinned dep
             raise DuplexConnectionError("The duplex client requires the 'websockets' package") from exc
         try:
-            return await websockets.connect(url, max_size=_MAX_FRAME_BYTES)
+            return await websockets.connect(url, additional_headers=self._extra_headers, max_size=_MAX_FRAME_BYTES)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

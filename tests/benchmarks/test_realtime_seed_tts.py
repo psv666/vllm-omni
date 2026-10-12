@@ -68,6 +68,7 @@ def client(monkeypatch):
         def __init__(self, url, *, config, **kwargs):
             assert url.startswith("ws://") and "duplex=1" in url
             self.config = config
+            self.extra_headers = kwargs.get("extra_headers")
             self.session_id = "session-1"
             self.sent = []
             self.pcm = bytearray()
@@ -176,6 +177,16 @@ def test_vad_silence_threshold_fits_inside_the_dataset_tail():
     # The module asserts this at import; pin it so lowering the dataset tail
     # cannot silently leave VAD unable to ever detect the endpoint.
     assert realtime._VAD_SILENCE_MS < realtime.SEED_TTS_SILENT_TAIL_MS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["explicit", "vad"])
+@pytest.mark.parametrize("headers", [None, {}, {"Authorization": "Bearer test-token", "X-Test": "seed-tts"}])
+async def test_request_headers_are_forwarded_to_duplex_client(client, trigger, headers):
+    request = _request(trigger)
+    request.extra_headers = headers
+    await realtime.run_realtime_seed_tts(request)
+    assert client.instances[-1].extra_headers == headers
 
 
 @pytest.mark.asyncio

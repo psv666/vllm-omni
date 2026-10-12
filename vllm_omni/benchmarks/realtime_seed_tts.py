@@ -124,6 +124,7 @@ async def run_realtime_seed_tts(request: RequestFuncInput) -> dict[str, Any]:
         build_realtime_url(request.api_url, request.model_name or request.model),
         model=request.model_name or request.model,
         config=config,
+        extra_headers=request.extra_headers,
         reconnect=None,
         heartbeat_interval_s=None,
         handshake_timeout_s=120.0,
