@@ -1197,12 +1197,13 @@ def test_segment_boundary_starts_new_send_watermark_before_background_flush(buil
     assert adapter.requests_num_chunks_sent["ext-stream"] == 3
 
 
-def test_background_send_uses_enqueued_request_snapshot(build_adapter):
+@pytest.mark.parametrize("prompt_token_ids", [[1, 2], list(range(2508))], ids=["short-prompt", "long-prompt"])
+def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_token_ids):
     """A queued segment must not observe later in-place request mutations."""
     adapter, _ = build_adapter(stage_id=1)
     request = Request(
         request_id="req-stream",
-        prompt_token_ids=[1, 2],
+        prompt_token_ids=prompt_token_ids.copy(),
         sampling_params=SamplingParams(max_tokens=8),
         pooling_params=None,
         resumable=True,
@@ -1255,9 +1256,29 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter):
     adapter._send_single_request(second_task)
 
     assert seen_requests == [
-        ("old", [1, 2], [7], [1, 2, 7], True),
-        ("next", [1, 2, 3], [7, 8], [1, 2, 7, 8], True),
+        ("old", prompt_token_ids, [7], prompt_token_ids + [7], True),
+        ("next", prompt_token_ids + [3], [7, 8], prompt_token_ids + [7, 8], True),
     ]
+
+
+def test_request_snapshot_preserves_embeddings_only_prompt():
+    prompt_embeds = torch.zeros(2, 4)
+    request = Request(
+        request_id="req-embeds",
+        prompt_token_ids=None,
+        prompt_embeds=prompt_embeds,
+        sampling_params=SamplingParams(max_tokens=8),
+        pooling_params=None,
+    )
+    request.append_output_token_ids([7])
+
+    snapshot = OmniChunkTransferAdapter._snapshot_processor_request(request)
+    request.append_output_token_ids([8])
+
+    assert snapshot.prompt_token_ids is None
+    assert snapshot.prompt_embeds is prompt_embeds
+    assert list(snapshot.output_token_ids) == [7]
+    assert snapshot.output_token_count == 1
 
 
 def test_save_without_custom_processor_does_not_snapshot_request(build_adapter, mocker):
