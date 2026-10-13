@@ -134,11 +134,21 @@ client does not attach authentication headers.
 The callback subtracts a 160 ms margin from the reported playback position and
 sends only that audio prefix to ASR, without supplying the original text as a
 recognition hint. Audio shorter than 500 ms after the margin is refused. The
-transcript is matched to an anchored original-text prefix, with ambiguous or
-sensitive edits rejected and the last recognized unit withheld. ASR text is
-never inserted into conversation history. Chinese matching currently uses
-characters rather than lexical words; successful matching does not prove exact
-acoustic alignment.
+transcript and original reply are split into Chinese characters and other
+words, ignoring punctuation and whitespace between units and normalizing
+Unicode width, case and apostrophe style. Matching starts at the beginning and
+stops at the first differing unit; it never skips a difference to resume later.
+The final matched unit is withheld, even when the transcript continues beyond
+the mismatch. For example, original `Keep your original files safe.` and ASR
+`keep your original file` retain `Keep your`.
+
+The transcript must contain at least three units, and neither text may exceed
+512 units. A valid comparison with no remaining units retains an empty prefix.
+The retained text is sliced from the original reply, preserving its spelling
+and internal punctuation; ASR text is never inserted into conversation history.
+Chinese boundaries are characters rather than lexical words. Early ASR errors
+can discard a long heard suffix, and a matching ASR hallucination can still
+retain unheard text; the guards do not establish exact acoustic alignment.
 
 The HTTP concurrency limit is shared across sessions and should match the
 backend's measured capacity. Timeout or cancellation closes the HTTP request.

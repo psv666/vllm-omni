@@ -9,7 +9,6 @@ exact acoustic alignment.
 
 from __future__ import annotations
 
-import math
 import unicodedata
 from dataclasses import dataclass
 
@@ -39,7 +38,6 @@ class TextUnit:
 
 # Keep original offsets: normalizing the whole string first can change lengths.
 _UNITS = re.compile(r"[\u3400-\u9fff]|[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
-_PROTECTED = frozenset({"不", "没", "无", "非", "别", "勿", "未", "not", "no", "never", "cannot", "don't", "can't"})
 
 
 def text_units(text: str) -> list[TextUnit]:
@@ -53,86 +51,30 @@ def text_units(text: str) -> list[TextUnit]:
     return result
 
 
-def _protected(value: str) -> bool:
-    return value in _PROTECTED or any(c.isdigit() for c in value)
-
-
 def asr_prefix(
     original: str,
     transcript: str,
     *,
-    max_error_rate: float = 0.2,
     tail_guard_units: int = 1,
     max_units: int = 512,
 ) -> PrefixResult:
-    """Align all ASR units to an anchored original prefix, allowing edits.
+    """Keep the normalized common prefix, withholding its final matched units.
 
-    Original suffixes are free, original leading deletions are forbidden. Equal
-    best endpoints are refused. Sensitive deletions/substitutions, long gaps,
-    and an unanchored tail are refused too. Withhold the final recognized unit
-    because ASR can complete a word cut in half even without a spelling error.
+    Stop at the first difference: never skip, substitute or resume matching
+    later text. Drop the tail of the matched prefix because ASR may complete a
+    partially heard word. Valid evidence can yield an empty prefix.
     """
-    if not 0 <= max_error_rate < 1 or tail_guard_units < 1 or max_units < 1:
+    if tail_guard_units < 1 or max_units < 1:
         raise ValueError("Invalid ASR prefix limits")
     source, heard = text_units(original), text_units(transcript)
-    n, m = len(source), len(heard)
-    if m < 3 or not n:
+    if len(heard) < 3 or not source:
         return PrefixResult(0, "insufficient_text")
-    if max(n, m) > max_units:
+    if max(len(source), len(heard)) > max_units:
         return PrefixResult(0, "text_limit")
-    inf = n + m + 1
-    costs = [[inf] * (n + 1) for _ in range(m + 1)]
-    costs[0][0] = 0
-    for i in range(1, m + 1):
-        costs[i][0] = i
-        for j in range(1, n + 1):
-            costs[i][j] = min(
-                costs[i - 1][j - 1] + (heard[i - 1].normalized != source[j - 1].normalized),
-                costs[i - 1][j] + 1,
-                costs[i][j - 1] + 1,
-            )
-    best = min(costs[m][1:])
-    if best > math.floor(m * max_error_rate):
-        return PrefixResult(0, "edit_distance")
-    ends = [j for j in range(1, n + 1) if costs[m][j] == best]
-    if len(ends) != 1:
-        return PrefixResult(0, "ambiguous_endpoint")
-    i, j = m, ends[0]
-    # A tied edit path is ambiguous even if its final endpoint is unique.
-    matches: list[tuple[int, int]] = []
-    tail_matches = 0
-    in_tail = True
-    deleted = 0
-    while i or j:
-        choices = []
-        if i and j:
-            equal = heard[i - 1].normalized == source[j - 1].normalized
-            if costs[i][j] == costs[i - 1][j - 1] + (not equal):
-                choices.append("match" if equal else "replace")
-        if i and costs[i][j] == costs[i - 1][j] + 1:
-            choices.append("insert")
-        if j and costs[i][j] == costs[i][j - 1] + 1:
-            choices.append("delete")
-        if len(choices) != 1:
-            return PrefixResult(0, "ambiguous_path")
-        op = choices[0]
-        if op == "match":
-            matches.append((i - 1, j - 1))
-            if in_tail:
-                tail_matches += 1
-            deleted = 0
-        else:
-            in_tail = False
-            if op in {"delete", "replace"} and _protected(source[j - 1].normalized):
-                return PrefixResult(0, "sensitive_edit")
-            if op in {"insert", "replace"} and _protected(heard[i - 1].normalized):
-                return PrefixResult(0, "sensitive_edit")
-            deleted = deleted + 1 if op == "delete" else 0
-            if deleted > 1:
-                return PrefixResult(0, "deletion_gap")
-        i -= op != "delete"
-        j -= op != "insert"
-    if tail_matches < tail_guard_units + 2:
-        return PrefixResult(0, "unanchored_tail")
-    eligible = [s for h, s in matches if h < m - tail_guard_units]
-    return PrefixResult(source[max(eligible)].end if eligible else 0)
+    matched = 0
+    for left, right in zip(source, heard):
+        if left.normalized != right.normalized:
+            break
+        matched += 1
+    retained = matched - tail_guard_units
+    return PrefixResult(source[retained - 1].end if retained > 0 else 0)

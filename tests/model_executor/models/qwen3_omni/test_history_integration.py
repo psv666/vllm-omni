@@ -4,10 +4,12 @@
 import ast
 import asyncio
 
+import httpx
 import pytest
 
 from tests.engine.duplex.test_session_runner import append_audio, tts_output
 from tests.model_executor.models.qwen3_omni.test_duplex_plugin import open_qwen
+from tests.model_executor.models.qwen3_omni.test_history_asr import install_transport
 from vllm_omni.engine.duplex.commands import (
     AckPlayback,
     CancelResponse,
@@ -17,6 +19,7 @@ from vllm_omni.engine.duplex.commands import (
     TruncateItem,
     UpdateSession,
 )
+from vllm_omni.model_executor.models.qwen3_omni.duplex.history_asr import QwenAsrCalibration
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
@@ -470,5 +473,38 @@ async def test_ack_after_playback_clear_starts_calibration_before_next_input():
         assert len(h.port.submissions) == 1, "Calibration must start before another turn is submitted"
         await h.runner.ctx.history_calibration.before_prompt()
         assert h.session.history[-1]["content"] == "Hello"
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finished", [True, False])
+@pytest.mark.parametrize(
+    ("transcript", "expected"), [("Hello world that was heard", "Hello"), ("Unrelated ASR text", "")]
+)
+async def test_real_asr_callback_updates_next_prompt_after_first_difference(
+    monkeypatch, finished, transcript, expected
+):
+    async def handle(request):
+        return httpx.Response(200, json={"text": transcript})
+
+    install_transport(monkeypatch, handle)
+    calibrate = QwenAsrCalibration("http://asr.test/transcriptions", "model-test", 1)
+    h = await open_qwen(calibrate=calibrate)
+    try:
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        request = h.port.submissions[-1].context.request_id
+        response = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request, samples=0, text=TEXT, finished=True), stage_id=0)
+        await h.deliver_and_settle(tts_output(request, samples=240000, finished=finished), stage_id=2)
+        await h.run(AckPlayback(response_id=response, played_ms=1000))
+        if not finished:
+            await h.run(CancelResponse())
+        await h.run(TruncateItem(item_id=f"item_{response}", audio_end_ms=1000))
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        messages = ast.literal_eval(h.port.submissions[-1].prompt["prompt"])
+        assert [m for m in messages if m["role"] == "assistant"] == [{"role": "assistant", "content": expected}]
     finally:
         await h.manager.shutdown()
