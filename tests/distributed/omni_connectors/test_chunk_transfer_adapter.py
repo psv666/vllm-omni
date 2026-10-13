@@ -15,6 +15,7 @@ from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_qu
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.metrics.stats import PrefillStats, PromptTokenStats
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.utils import ConstantList
 
 from tests.helpers.omni_scheduler import bind_omits_transfer_helpers
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARScheduler
@@ -1197,17 +1198,21 @@ def test_segment_boundary_starts_new_send_watermark_before_background_flush(buil
     assert adapter.requests_num_chunks_sent["ext-stream"] == 3
 
 
-@pytest.mark.parametrize("prompt_token_ids", [[1, 2], list(range(2508))], ids=["short-prompt", "long-prompt"])
-def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_token_ids):
+@pytest.mark.parametrize("prompt_token_ids", [[], [1, 2], list(range(2508))], ids=["empty", "short", "long"])
+@pytest.mark.parametrize("wrap_prompt", [False, True], ids=["list", "constant-list"])
+def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_token_ids, wrap_prompt, mocker):
     """A queued segment must not observe later in-place request mutations."""
     adapter, _ = build_adapter(stage_id=1)
+    live_prompt_token_ids = prompt_token_ids.copy()
     request = Request(
         request_id="req-stream",
-        prompt_token_ids=prompt_token_ids.copy(),
+        prompt_token_ids=live_prompt_token_ids,
         sampling_params=SamplingParams(max_tokens=8),
         pooling_params=None,
         resumable=True,
     )
+    if wrap_prompt:
+        mocker.patch.object(request, "prompt_token_ids", ConstantList(live_prompt_token_ids))
     request.external_req_id = "ext-stream"
     ref_audio = torch.tensor([0.1, -0.1])
     request.additional_information = {"codes": {"ref": ref_audio}, "meta": {"segment": "old"}}
@@ -1234,7 +1239,7 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_to
         is_segment_finished=True,
     )
     request.additional_information["meta"]["segment"] = "next"
-    request.prompt_token_ids.append(3)
+    live_prompt_token_ids.append(3)
     request.append_output_token_ids([8])
     request._omni_segment_generation = 1
     adapter.save_async(
@@ -1243,7 +1248,7 @@ def test_background_send_uses_enqueued_request_snapshot(build_adapter, prompt_to
         is_segment_finished=True,
     )
     request.additional_information["meta"]["segment"] = "later"
-    request.prompt_token_ids.append(4)
+    live_prompt_token_ids.append(4)
     request.append_output_token_ids([9])
 
     assert len(adapter._pending_save_reqs) == 2
