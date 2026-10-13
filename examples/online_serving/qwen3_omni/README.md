@@ -568,17 +568,21 @@ Serve `vllm_omni/deploy/qwen3_omni_duplex.yaml` (one session at a time) and
 keep client concurrency at 1.
 
 ```bash
-vllm bench omni-duplex-eval --omni generate \
-    --url ws://127.0.0.1:8091/v1/realtime?duplex=1 \
+vllm bench serve --omni \
+    --backend openai-realtime-duplex --endpoint /v1/realtime \
+    --base-url http://127.0.0.1:8091 \
     --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
-    --turn-detection server_vad \
-    --instructions "You are a real-time video assistant. Reply to the user's latest request briefly, in one or two spoken sentences." \
-    --dataset Hothan/Omni-DuplexEval \
-    --response-root /data/omni-duplex-eval/qwen3-responses
+    --duplex-eval-turn-detection server_vad \
+    --duplex-eval-instructions "You are a real-time video assistant. Reply to the user's latest request briefly, in one or two spoken sentences." \
+    --dataset-name omni-duplex-eval --dataset-path Hothan/Omni-DuplexEval \
+    --duplex-eval-split PR_correction \
+    --duplex-eval-response-root ./duplex-eval-qwen3 \
+    --num-prompts 3 --disable-shuffle --max-concurrency 1 --num-warmups 0 \
+    --ready-check-timeout-sec 0 --save-result
 ```
 
-Evaluate and summarize as in the
-[MiniCPM-o Omni-DuplexEval guide](../minicpmo/README.md#run-omni-duplexeval).
+For metrics, post-run judging and the nightly performance configuration, see
+[Omni-DuplexEval serving benchmarks](../../../docs/cli/bench/serve.md#omni-duplexeval-realtime-benchmark).
 For OmniInteract, see
 [turn-based duplex models](../../../docs/cli/bench/serve.md#turn-based-duplex-models-qwen3-omni).
 A turn-based model acknowledges proactive requests ("remind me when ...")

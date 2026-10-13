@@ -621,12 +621,13 @@ async def wait_for_server_turns(
     timeout_s: float,
     settle_s: float,
 ) -> None:
-    """Wait until every server-detected turn has been answered.
+    """Wait until observed speech/responses settle.
 
     With ``server_vad`` the client never commits, so there is no final commit
-    to anchor on. The session is complete once no speech or response is open
+    to anchor on. Stop draining once no observed speech or response is open
     and no event has arrived for ``settle_s``, which also covers the short gap
-    between a VAD commit and its ``response.created``.
+    between a VAD commit and its ``response.created``. This quiet window is
+    not an acknowledgement that the server has processed all final input.
     """
     deadline = time.monotonic() + timeout_s
     activity = turn_activity_count(client.events.events[session_from:])

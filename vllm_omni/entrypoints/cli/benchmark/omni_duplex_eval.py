@@ -83,7 +83,7 @@ def add_cli_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "'none' streams each sample and commits once, for model-native duplex models (MiniCPM-o). "
             "'server_vad' lets the server cut the question audio into turns, for turn-based duplex models "
-            "(Qwen3-Omni); the client then never commits and waits for every turn to be answered."
+            "(Qwen3-Omni); the client then never commits and waits for observed speech/responses to settle."
         ),
     )
     generate.add_argument("--response-root", required=True)

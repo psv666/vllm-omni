@@ -2977,8 +2977,8 @@ async def _async_request_duplex_eval(request: RequestFuncInput, *, pbar: tqdm | 
     output.tpot_measured = False
     try:
         sample = getattr(request, "duplex_eval_sample", None)
-        if not isinstance(sample, OmniDuplexEvalSampleRequest) or sample.sample is None or sample.ref_audio is None:
-            raise ValueError("Omni-DuplexEval requires a dataset sample and reference audio")
+        if not isinstance(sample, OmniDuplexEvalSampleRequest) or sample.sample is None:
+            raise ValueError("Omni-DuplexEval requires a dataset sample")
         # The benchmark's concurrency slot bounds live decoded inputs. Keep
         # preparation off the event loop and outside this session's latency;
         # throughput still includes any client preparation stalls.
@@ -2996,6 +2996,8 @@ async def _async_request_duplex_eval(request: RequestFuncInput, *, pbar: tqdm | 
                 fps=sample.fps,
                 prepared=prepared,
                 defer_artifacts=True,
+                turn_detection=sample.turn_detection,
+                instructions=sample.instructions,
                 additional_headers=headers or None,
                 extra_body=dict(request.extra_body or {}),
             ),

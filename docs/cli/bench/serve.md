@@ -315,6 +315,41 @@ filtering and local media. The default is three samples and single concurrency;
 without repeating it. `--seed` controls shuffling; `--disable-shuffle` preserves
 dataset order.
 
+For a Qwen3-Omni server started with `vllm_omni/deploy/qwen3_omni_duplex.yaml`,
+use the same entrypoint with server-detected turns and no reference audio:
+
+```bash
+vllm bench serve --omni \
+  --backend openai-realtime-duplex --endpoint /v1/realtime \
+  --base-url http://127.0.0.1:8000 \
+  --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --dataset-name omni-duplex-eval --dataset-path Hothan/Omni-DuplexEval \
+  --duplex-eval-split PR_correction --duplex-eval-turn-detection server_vad \
+  --duplex-eval-instructions "Reply briefly to the user's latest request." \
+  --duplex-eval-response-root ./duplex-eval-qwen3 \
+  --num-prompts 3 --disable-shuffle --max-concurrency 1 --num-warmups 0 \
+  --ready-check-timeout-sec 0 --save-result
+```
+
+`--duplex-eval-turn-detection` defaults to `none`, preserving the native duplex
+runner's explicit commit. With `server_vad`, the runner appends trailing silence
+and waits for observed speech/responses to settle. This is not an acknowledgement
+that all final input has been processed. Frames use the transport advertised by
+the server: native video frames or bounded image conversation items for Qwen3.
+`--duplex-eval-instructions` defaults to the native duplex prompt; passing an empty
+string uses the server's default instructions. `--duplex-eval-ref-audio` is optional
+for Qwen3 and remains available for models that require a reference voice.
+
+The CUDA nightly configuration
+`tests/dfx/perf/tests/test_qwen3_omni_duplex_omni_duplex_eval.json` uses the common
+performance runner on three GPUs (two for Qwen3-Omni, one for the text judge).
+It measures three `PR_correction` sessions with post-run judging and two
+`RTD_counting` sessions without judging, preserving dataset order. The checks require
+complete artifacts, completed observed responses and measured text/audio latency
+for every session; judging must cover every selected PR sample. Scores are reported
+without a quality threshold. RTD scoring requires a vision-capable judge and is
+outside this configuration. No hardware latency baseline is configured.
+
 Inputs retain the standalone runner's real-time pacing, question audio, media
 clock and 1 FPS default (`--duplex-eval-fps`). Each session decodes its media in a
 worker thread after acquiring a concurrency slot, and releases the decoded input

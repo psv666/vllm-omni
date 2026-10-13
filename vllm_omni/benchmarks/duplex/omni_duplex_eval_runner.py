@@ -6,7 +6,7 @@
 Model-native duplex models (MiniCPM-o) hear the whole clip and are committed
 once at the end. Turn-based models (Qwen3-Omni) run with ``server_vad`` turn
 detection: the server cuts the question audio into turns, and the runner waits
-for every turn to be answered instead of committing.
+for observed speech/responses to settle instead of committing.
 """
 
 from __future__ import annotations
@@ -307,7 +307,7 @@ async def generate_sample(
         code = error.get("code") if isinstance(error, dict) else event.get("code")
         # As in OmniInteract, an ACK racing a later commit is harmless. All
         # other server errors still make the serving sample unsuccessful.
-        if code != "playback_ack_too_late":
+        if code not in {"playback_ack_too_late", "playback_item_not_found"}:
             errors.append(str(event))
     errors.extend(str(error) for error in (drain_timeout, close_timeout) if error)
     finished = set()
