@@ -483,13 +483,14 @@ async def test_ack_after_playback_clear_starts_calibration_before_next_input():
     ("transcript", "expected"), [("Hello world that was heard", "Hello"), ("Unrelated ASR text", "")]
 )
 async def test_real_asr_callback_updates_next_prompt_after_first_difference(
-    monkeypatch, finished, transcript, expected
+    monkeypatch, caplog, finished, transcript, expected
 ):
     async def handle(request):
         return httpx.Response(200, json={"text": transcript})
 
     install_transport(monkeypatch, handle)
     calibrate = QwenAsrCalibration("http://asr.test/transcriptions", "model-test", 1)
+    caplog.set_level("INFO", logger="vllm_omni.engine.duplex.session.history_calibration")
     h = await open_qwen(calibrate=calibrate)
     try:
         await h.run(append_audio())
@@ -506,5 +507,103 @@ async def test_real_asr_callback_updates_next_prompt_after_first_difference(
         await h.run(Commit(final=True, create_response=True))
         messages = ast.literal_eval(h.port.submissions[-1].prompt["prompt"])
         assert [m for m in messages if m["role"] == "assistant"] == [{"role": "assistant", "content": expected}]
+        assert "status=applied " in caplog.text
+        assert "status=stale_or_invalid" not in caplog.text
     finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requires_audio", [True, False])
+@pytest.mark.parametrize("char_end", [5, 0, None])
+async def test_cancelled_reply_evidence_is_bounded_and_evicted_history_stays_conservative(requires_audio, char_end):
+    async def calibrate(snapshot):
+        return char_end
+
+    h = await open_qwen(calibrate=calibrate, requires_audio=requires_audio)
+    responses = []
+    expected = "Hello" if char_end else ""
+    try:
+        controller = h.runner.ctx.history_calibration
+        for _ in range(12):
+            await h.run(append_audio())
+            await h.run(Commit(final=True, create_response=True))
+            request = h.port.submissions[-1].context.request_id
+            response = h.session.active_response_id
+            responses.append(response)
+            await h.deliver_and_settle(tts_output(request, samples=0, text=TEXT, finished=True), stage_id=0)
+            await h.deliver_and_settle(tts_output(request, samples=240000, finished=False), stage_id=2)
+            await h.run(AckPlayback(response_id=response, played_ms=1000))
+            await h.run(CancelResponse())
+            await h.run(TruncateItem(item_id=f"item_{response}", audio_end_ms=1000))
+            await controller.before_prompt()
+            await h.run(AckPlayback(response_id=response, played_ms=10000))
+            assert h.session.history[-1]["content"] == expected
+            assert len(controller.audio) <= 4
+            assert len(h.session._conversation.assistant_response_snapshots) <= 4
+            assert len(h.session._playback.by_response) <= 4
+            assert len(h.session._conversation.hard_truncations_ms) <= 4
+            assert len(h.session._conversation.pending_item_ids) <= 4
+            assert len(h.session._conversation.pending_truncations_ms) <= 4
+            assert not controller.tasks
+
+        # Eviction must keep the committed turn, reject resurrection from a
+        # late ACK, and conservatively honor a stricter cutoff without audio.
+        oldest = responses[0]
+        item_id = f"item_{oldest}"
+        assert h.session.history_item_ids[item_id]["content"] == expected
+        assert h.session._conversation.heard_prefixes[item_id] == (expected, len(expected), 1000)
+        # The item metadata shares the stored text instead of retaining TEXT.
+        assert h.session._conversation.heard_prefixes[item_id][0] is h.session.history_item_ids[item_id]["content"]
+        await h.run(AckPlayback(response_id=oldest, played_ms=10000))
+        assert h.session.history_item_ids[item_id]["content"] == expected
+        await h.run(TruncateItem(item_id=item_id, audio_end_ms=500))
+        assert h.session.history_item_ids[item_id]["content"] == ""
+        await h.run(AckPlayback(response_id=oldest, played_ms=10000))
+        assert h.session.history_item_ids[item_id]["content"] == ""
+        assert oldest not in h.session._playback.by_response
+        assert oldest not in h.session._conversation.assistant_response_snapshots
+        await h.run(DeleteItem(item_id=item_id))
+        assert item_id not in h.session._conversation.heard_prefixes
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_eviction_revokes_pending_calibration_without_restoring_its_original_text():
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    first_response = None
+
+    async def calibrate(snapshot):
+        nonlocal first_response
+        if first_response is None:
+            first_response = snapshot.response_id
+            entered.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+        return 5
+
+    h = await open_qwen(calibrate=calibrate, requires_audio=False)
+    try:
+        response = await completed_response(h)
+        await h.run(TruncateItem(item_id=f"item_{response}", audio_end_ms=1000))
+        await asyncio.wait_for(entered.wait(), 1)
+        controller = h.runner.ctx.history_calibration
+        task = controller.tasks[response]
+        # Force cache eviction while the callback is still running, before a
+        # prompt deadline can cancel it. This is the output recorder's API.
+        for index in range(4):
+            controller.record(f"next-{index}", {})
+        await asyncio.wait_for(cancelled.wait(), 1)
+        assert response not in controller.audio
+        assert response not in h.session._conversation.assistant_response_snapshots
+        assert response not in h.session._playback.by_response
+        release.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert h.session.history_item_ids[f"item_{response}"]["content"] == ""
+    finally:
+        release.set()
         await h.manager.shutdown()

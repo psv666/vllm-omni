@@ -12,7 +12,12 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 def test_cache_keeps_working_after_many_evictions_and_never_restarts_a_live_suffix():
     draining: set[str] = set()
-    session = SimpleNamespace(active_response_id=None, response_has_draining_request=draining.__contains__)
+    retired: list[str] = []
+    session = SimpleNamespace(
+        active_response_id=None,
+        response_has_draining_request=draining.__contains__,
+        retire_history_calibration=retired.append,
+    )
 
     async def calibrate(snapshot):
         pytest.fail("Recording audio must not start ASR")
@@ -30,11 +35,13 @@ def test_cache_keeps_working_after_many_evictions_and_never_restarts_a_live_suff
             assert controller.audio[response_id].size == 8
             assert controller.retained_bytes <= 16
         assert "old" in controller.evicted
+        assert "old" not in retired
         controller.record("old", output)
         assert "old" not in controller.audio
         draining.clear()
         controller.record(session.active_response_id, output)
         assert not controller.evicted
+        assert "old" in retired
         # Deleting an item does not necessarily stop its audio generation.
         controller.discard(session.active_response_id)
         controller.record(session.active_response_id, output)

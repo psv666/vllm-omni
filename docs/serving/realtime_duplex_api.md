@@ -212,6 +212,16 @@ Oversized or evicted recordings are unusable for calibration; subsequent chunks
 cannot restart them with a suffix presented as a complete recording. Temporary
 snapshot, WAV and HTTP buffers are additional to the retained-PCM budget.
 
+For either strategy, eviction also releases the ended reply's original text
+snapshot, playback cursor and pending reconciliation state. Live or draining
+replies defer this cleanup until generation ends. The stored conversation turn
+keeps its confirmed prefix and cutoff, without retaining the original full
+reply. A later ACK cannot expand that prefix. If a later truncate is stricter
+than its cutoff, the prefix is cleared conservatively because the evidence
+needed to recalibrate it has expired. Recent retained replies can still be
+recalibrated. Conversation items and their compact cutoff metadata remain until
+item deletion or session disposal; the cache limits do not bound total history.
+
 Missing playback evidence, missing audio, matching refusal, exceptions and
 timeouts preserve the existing conservative history policy. Without an already
 confirmed prefix, partial playback leaves an empty assistant item. A permanent

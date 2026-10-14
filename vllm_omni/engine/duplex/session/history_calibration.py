@@ -95,13 +95,19 @@ class HistoryCalibration:
     def _is_generating(self, response_id: str) -> bool:
         return response_id == self.session.active_response_id or self.session.response_has_draining_request(response_id)
 
+    def _retire_evicted(self) -> None:
+        for response_id in tuple(self.evicted):
+            if not self._is_generating(response_id):
+                self.session.retire_history_calibration(response_id)
+                self.evicted.remove(response_id)
+
     def record(self, response_id: str, output: dict) -> None:
         """Record projected output without restarting a discarded live reply."""
         if self.closed:
             return
         # Only live outputs can restart an evicted recording with a suffix.
         # ModelChannel rejects late output after the response stops generating.
-        self.evicted = {rid for rid in self.evicted if self._is_generating(rid)}
+        self._retire_evicted()
         if response_id in self.evicted:
             return
         item = self.audio.setdefault(response_id, _Audio())
@@ -136,6 +142,8 @@ class HistoryCalibration:
         """Release a reply's recording and revoke any pending calibration."""
         if self._is_generating(response_id):
             self.evicted.add(response_id)
+        else:
+            self.session.retire_history_calibration(response_id)
         self.audio.pop(response_id, None)
         self.versions.pop(response_id, None)
         task = self.tasks.pop(response_id, None)
@@ -144,6 +152,7 @@ class HistoryCalibration:
 
     def request_ready(self) -> None:
         """Start only ended replies with a partial, client-confirmed playback cursor."""
+        self._retire_evicted()
         if self.closed or self.session.config.playback_commit_policy != "ack_only":
             return
         for response_id, audio in list(self.audio.items()):

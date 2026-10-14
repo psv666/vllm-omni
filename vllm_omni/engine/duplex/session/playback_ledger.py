@@ -137,7 +137,11 @@ def apply_playback_ack(
             }
         )
     ]
-    if committed_history and response_id is not None:
+    if response_id is not None and session.history_calibration_retired(response_id):
+        # This ACK may have recreated a cursor for an evicted reply. Its stored
+        # prefix/cutoff suffice; keep no new response-scoped playback state.
+        session.release_response_playback(response_id)
+    elif committed_history and response_id is not None:
         # Calibration needs the original reply and cursor even before its
         # first result. Keep that evidence for incomplete or hard-capped audio;
         # sessions without calibration retain their existing ACK cleanup.

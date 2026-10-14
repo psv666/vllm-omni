@@ -581,6 +581,40 @@ class DuplexEngineSession:
         self._conversation.heard_prefixes.pop(f"item_{response_id}", None)
         self._conversation.hard_truncations_ms.pop(f"item_{response_id}", None)
 
+    def retire_history_calibration(self, response_id: str) -> None:
+        """Release evicted evidence while keeping the committed turn immutable.
+
+        Only the stored prefix and its evidence cutoff survive with the history
+        item. Without the original recording, an earlier truncate must clear
+        that prefix rather than estimate a new alignment or restore full text.
+        """
+        if response_id == self.active_response_id or self.response_has_draining_request(response_id):
+            return
+        if response_id not in self._conversation.assistant_response_snapshots:
+            return
+        item_id = f"item_{response_id}"
+        prefix = self._conversation.heard_prefixes.get(item_id)
+        cutoff = prefix[2] if prefix is not None else self.history_audio_cutoff(response_id)
+        message = self._conversation.item_ids.get(item_id)
+        if message is None and item_id in self._conversation.history_item_placeholders:
+            message = self._store_history_item_message(item_id, _object_dict(role="assistant", content=""))
+        self.release_response_history_snapshot(response_id)
+        self.release_response_playback(response_id)
+        self._conversation.pending_item_ids.pop(item_id, None)
+        self._conversation.pending_item_audio_text_marks.pop(item_id, None)
+        self._conversation.pending_item_input_commit_seqs.pop(item_id, None)
+        self._conversation.pending_truncations_ms.pop(item_id, None)
+        self._conversation.item_audio_text_marks.pop(item_id, None)
+        if message is not None and isinstance(content := message.get("content"), str):
+            # Share the stored string; do not retain the original full reply.
+            self._conversation.heard_prefixes[item_id] = (content, len(content), cutoff)
+
+    def history_calibration_retired(self, response_id: str) -> bool:
+        return (
+            f"item_{response_id}" in self._conversation.heard_prefixes
+            and response_id not in self._conversation.assistant_response_snapshots
+        )
+
     @property
     def playback(self) -> DuplexPlaybackView:
         return self._playback.current.snapshot()
@@ -1454,7 +1488,10 @@ class DuplexEngineSession:
         ):
             return False
         self._conversation.heard_prefixes[item_id] = (text, char_end, audio_end_ms)
-        return self.truncate_history_item(item_id, audio_end_ms=self.history_audio_cutoff(response_id))
+        self.truncate_history_item(item_id, audio_end_ms=self.history_audio_cutoff(response_id))
+        # The validated prefix was applied even when it intentionally kept no
+        # text. truncate_history_item's bool also serves legacy ACK semantics.
+        return True
 
     def truncate_history_item(
         self,
@@ -1464,8 +1501,18 @@ class DuplexEngineSession:
         playback: DuplexPlaybackCursor | DuplexPlaybackView | None = None,
         hard: bool = False,
     ) -> bool:
-        playback = playback or self._playback_cursor_for_item_id(item_id)
         audio_end_ms = max(0, int(audio_end_ms))
+        response_id = item_id.removeprefix("item_") if item_id.startswith("item_") else None
+        if response_id is not None and self.history_calibration_retired(response_id):
+            # Old ACKs cannot expand or shrink a finalized prefix. A stricter
+            # explicit cutoff clears it because its alignment evidence expired.
+            text, char_end, cutoff = self._conversation.heard_prefixes[item_id]
+            if hard and audio_end_ms < cutoff:
+                text, char_end, cutoff = "", 0, audio_end_ms
+                self._conversation.heard_prefixes[item_id] = (text, char_end, cutoff)
+            self._store_history_item_message(item_id, _object_dict(role="assistant", content=text[:char_end]))
+            return True
+        playback = playback or self._playback_cursor_for_item_id(item_id)
         if hard:
             previous_cap_ms = self._conversation.hard_truncations_ms.get(item_id)
             self._conversation.hard_truncations_ms[item_id] = (
@@ -1474,7 +1521,6 @@ class DuplexEngineSession:
         hard_cap_ms = self._conversation.hard_truncations_ms.get(item_id)
         if hard_cap_ms is not None:
             audio_end_ms = min(audio_end_ms, hard_cap_ms)
-        response_id = item_id.removeprefix("item_") if item_id.startswith("item_") else None
         response_snapshot = (
             self._conversation.assistant_response_snapshots.get(response_id) if response_id is not None else None
         )
