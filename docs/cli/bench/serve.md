@@ -475,6 +475,10 @@ selects all and oversize values use all available cases. OmniInteract uses the `
 `--omniinteract-ref-audio` for models that clone a reference voice (MiniCPM-o); models that refuse one (Qwen3-Omni) run
 without it. `--omniinteract-instructions` sets the session system prompt; by default none is sent.
 
+For comparable MiniCPM-o scores, explicitly pass the same reference WAV in every run, even though ordinary sessions
+can use the model-bundled default when `ref_audio` is omitted. Pass the model's `assets/HT_ref_audio.wav` to benchmark
+that default voice. The Qwen3-Omni examples omit reference audio because that model does not accept it.
+
 #### Turn-based duplex models (Qwen3-Omni)
 
 A model-native duplex model decides on its own when to speak, so each clip is streamed and committed once at the end.
