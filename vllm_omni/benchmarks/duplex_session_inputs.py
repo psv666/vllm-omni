@@ -48,6 +48,10 @@ _IMAGE_ITEM_JPEG_QUALITY = 85
 #: longer than the VAD's ``silence_duration_ms`` (500 ms by default) so the
 #: server closes a question spoken right at the end of the clip.
 SERVER_VAD_TAIL_S = 1.5
+#: Silero scores 512 samples at 16 kHz per frame. Keep each audio append to
+#: one frame: the detector aggregates an append's flags and can otherwise
+#: hide a speech stop followed by a new start in the same append.
+SERVER_VAD_FRAME_MS = 32
 
 
 def session_turn_detection(mode: str) -> dict[str, object] | None:

@@ -1078,11 +1078,65 @@ async def test_server_vad_runner_sends_frames_as_image_items_and_never_commits(
     assert session_config.ref_audio is None and "force_listen_count" not in session_config.extra_body
     appends = [event for event in client.sent if event["type"] == "input_audio_buffer.append"]
     assert appends and not any("video_frames" in event for event in appends)
-    # The 1.0 s clip plus the 0.2 s VAD tail, in 200 ms chunks.
-    assert len(appends) == 6
+    # Keep the complete clip and tail while sending at most one VAD frame.
+    chunks = [base64.b64decode(event["audio"]) for event in appends]
+    assert max(map(len, chunks)) <= 512 * 2
+    assert b"".join(chunks) == bytes(16_000 * 2 + 3_200 * 2)
     images = [event for event in client.sent if event["type"] == "conversation.item.create"]
     assert [event["item"]["content"][0]["image_url"] for event in images] == ["data:image/jpeg;base64," + frame]
     assert result.input_video_frames == 1
+
+
+@pytest.mark.asyncio
+async def test_server_vad_runner_preserves_adjacent_turn_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import numpy as np
+
+    from vllm_omni.engine.duplex.turn_detection import ServerTurnDetector, TurnDetectionConfig
+
+    # An endpoint at 1664 ms and the next onset at 1760 ms fall in the same
+    # 200 ms append. Only replace the probability scorer, not the state machine.
+    pcm = np.concatenate([np.ones(36 * 512), np.zeros(16 * 512), np.ones(21 * 512)]).astype("<i2").tobytes()
+    detector = ServerTurnDetector(TurnDetectionConfig())
+    monkeypatch.setattr(detector.vad, "_frame_scorer", lambda frame: 0.99 if np.any(frame) else 0.01)
+    commits = []
+
+    class BoundaryClient(_ServerVadClient):
+        async def send(self, event: dict[str, object]) -> None:
+            self.sent.append(event)
+            if event["type"] != "input_audio_buffer.append":
+                return
+            detected = detector.process(str(event["audio"]), fmt="pcm16", sample_rate_hz=16_000)
+            if detected.speech_started:
+                self.events.add({"type": "input_audio_buffer.speech_started"})
+            if detected.speech_stopped:
+                self.events.add({"type": "input_audio_buffer.speech_stopped"})
+            if detected.should_commit:
+                commits.append(event["audio_end_ms"])
+                response_id = f"r{len(commits)}"
+                for response in (
+                    _created(response_id),
+                    _audio(response_id, samples=24),
+                    _text(response_id, value="answer"),
+                    _done(response_id),
+                ):
+                    self.events.add(response)
+
+    monkeypatch.setattr(oi, "_RealtimeSession", BoundaryClient)
+    monkeypatch.setattr(oi, "_COMPLETION_SETTLE_S", 0.0)
+    config = oi.OmniInteractBenchmarkConfig(
+        model="mock", output_root=tmp_path / "out", require_response=True, turn_detection="server_vad"
+    )
+    frame = base64.b64encode(b"jpeg").decode()
+    prepared = data.OmniInteractPreparedInput(len(pcm) / 32_000, pcm, (frame, frame), None)
+    result = await oi.run_omniinteract_case(_case(tmp_path), config, request_index=0, prepared_input=prepared)
+
+    assert commits == [1664, 2848]
+    assert result.success and result.responses == 2, result.error
+    client = BoundaryClient.instances[-1]
+    chunks = [base64.b64decode(event["audio"]) for event in client.sent if event["type"] == "input_audio_buffer.append"]
+    assert max(map(len, chunks)) <= 512 * 2
+    assert b"".join(chunks) == pcm + bytes(24_000 * 2)
+    assert result.input_video_frames == 2
 
 
 def test_standard_sample_loading_prepares_media_before_timing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

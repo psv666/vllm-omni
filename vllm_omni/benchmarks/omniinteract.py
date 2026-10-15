@@ -36,6 +36,7 @@ from vllm_omni.benchmarks.data_modules.omniinteract_dataset import (
 )
 from vllm_omni.benchmarks.duplex_session_inputs import (
     FRAME_TRANSPORT_IMAGE_ITEMS,
+    SERVER_VAD_FRAME_MS,
     SERVER_VAD_TAIL_S,
     TURN_DETECTION_MODES,
     TURN_DETECTION_NONE,
@@ -371,7 +372,8 @@ async def stream_inputs(
     image_items: ImageItemWindow | None = None,
 ) -> tuple[int, int, float, float]:
     bytes_per_second = PCM16_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE
-    chunk_bytes = bytes_per_second * _INPUT_CHUNK_MS // 1000
+    chunk_ms = SERVER_VAD_FRAME_MS if client.session_config.turn_detection is not None else _INPUT_CHUNK_MS
+    chunk_bytes = bytes_per_second * chunk_ms // 1000
     started_at = time.monotonic()
     frame_cursor = sent_frames = 0
     lags: list[float] = []

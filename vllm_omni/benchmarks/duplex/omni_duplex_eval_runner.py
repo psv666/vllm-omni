@@ -24,6 +24,7 @@ import pybase64 as base64
 from vllm_omni.benchmarks.duplex.omni_duplex_eval_dataset import DuplexSample
 from vllm_omni.benchmarks.duplex_session_inputs import (
     FRAME_TRANSPORT_IMAGE_ITEMS,
+    SERVER_VAD_FRAME_MS,
     SERVER_VAD_TAIL_S,
     TURN_DETECTION_MODES,
     TURN_DETECTION_NONE,
@@ -190,6 +191,8 @@ async def generate_sample(
     Timed sentences and ``*.meta.json`` stay the quality-eval artifacts. Duplex
     request/session metrics are returned for the CLI to write
     ``duplex_metrics.json``; they are not written into meta.
+    ``server_vad`` uses one detector frame per append, overriding the native
+    ``unit_ms`` setting while keeping the decoded video samples unchanged.
     """
     output = Path(output_root) / sample.split / f"{sample.id}.json"
     if not defer_artifacts and output.exists() and not overwrite:
@@ -199,6 +202,8 @@ async def generate_sample(
     if turn_detection not in TURN_DETECTION_MODES:
         raise ValueError(f"turn_detection must be one of {TURN_DETECTION_MODES}")
     server_turns = turn_detection == TURN_DETECTION_SERVER_VAD
+    if server_turns:
+        unit_ms = SERVER_VAD_FRAME_MS
     if prepared is None:
         # Standalone generation shares its loop with other live sessions;
         # decoding a whole clip must not pause their input or playback ACKs.

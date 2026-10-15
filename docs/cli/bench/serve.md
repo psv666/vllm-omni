@@ -332,8 +332,12 @@ vllm bench serve --omni \
 ```
 
 `--duplex-eval-turn-detection` defaults to `none`, preserving the native duplex
-runner's explicit commit. With `server_vad`, the runner appends trailing silence
-and waits for observed speech/responses to settle. This is not an acknowledgement
+runner's explicit commit. With `server_vad`, the runner sends audio in 32 ms appends
+(one 512-sample detector frame at 16 kHz), appends trailing silence, and waits for
+observed speech/responses to settle. A larger append can span the end of one turn
+and the start of the next, hiding the earlier endpoint. Video sampling still uses
+`--duplex-eval-fps`; native duplex retains its 1000 ms default audio units. The
+sample metadata records the effective `unit_ms`. Settling is not an acknowledgement
 that all final input has been processed. Frames use the transport advertised by
 the server: native video frames or bounded image conversation items for Qwen3.
 `--duplex-eval-instructions` defaults to the native duplex prompt; passing an empty
@@ -483,7 +487,9 @@ that default voice. The Qwen3-Omni examples omit reference audio because that mo
 
 A model-native duplex model decides on its own when to speak, so each clip is streamed and committed once at the end.
 A turn-based model only answers committed turns. `--omniinteract-turn-detection server_vad` lets the server's VAD cut the
-soundtrack into turns: the client never commits, appends 1.5 s of trailing silence so a question at the very end still
+soundtrack into turns. It sends 32 ms audio appends so each detector frame's endpoint is processed before the next onset;
+native duplex keeps its 200 ms appends, and video sampling is unchanged. The client never commits in `server_vad` mode,
+appends 1.5 s of trailing silence so a question at the very end still
 closes, and waits until no speech or response is open. Frames follow the session capabilities: a model that does not
 accept `video_frames` on audio appends but accepts images gets each frame as an `input_image` conversation item, with the
 oldest deleted so at most 8 stay in the session (frames too large for the server's 4 MiB image budget are downscaled).
