@@ -1078,6 +1078,8 @@ def test_finished_drain_keeps_sent_audio_ackable() -> None:
 
 @pytest.mark.parametrize("draining", [False, True])
 def test_deleting_a_live_item_preserves_its_output_playback_cursor(draining):
+    from vllm_omni.engine.duplex.events import ErrorEvent
+
     session = _session(config=DuplexSessionConfig(playback_commit_policy="ack_only"))
     response_id = session.begin_response()
     item_id = f"item_{response_id}"
@@ -1092,3 +1094,23 @@ def test_deleting_a_live_item_preserves_its_output_playback_cursor(draining):
     # Item deletion does not cancel an in-flight model request. Its next audio
     # chunk still needs the previous duration for response-local offsets.
     assert session.playback_for_response(response_id).sent_ms == 1000
+    if draining:
+        active_response_id = session.active_response_id
+        session.mark_audio_sent(duration_ms=250)
+        assert session.pop_draining_request("drain") == response_id
+        session.release_finished_drain_response(response_id)
+        assert response_id not in session._playback.by_response
+        assert session.active_response_id == active_response_id
+        assert session.playback.sent_ms == 250
+        events = apply_playback_ack(
+            session,
+            {
+                "type": "playback.ack",
+                "response_id": response_id,
+                "item_id": item_id,
+                "played_ms": 1000,
+                "committed_ms": 1000,
+            },
+        )
+        assert any(isinstance(event, ErrorEvent) and event.code == "playback_item_not_found" for event in events)
+        assert response_id not in session._playback.by_response

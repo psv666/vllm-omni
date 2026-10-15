@@ -1290,18 +1290,23 @@ class DuplexEngineSession:
         Overlap leaves the next turn active, so this must not call
         ``end_response``. Audio that was already sent stays ACK-admissible:
         the client may ``playback.ack`` after the drain ``response.done``.
-        A response that sent no audio has nothing to acknowledge, so its
-        snapshot, playback cursor, and unused history placeholder are dropped.
+        A response that sent no audio or whose item was deleted has nothing
+        left to acknowledge, so its snapshot, playback cursor, and unused
+        history placeholder are dropped.
         The live response is left untouched.
         """
         if response_id is None or response_id == self.active_response_id:
             return
+        item_id = f"item_{response_id}"
         playback = self._playback.by_response.get(response_id)
-        if playback is not None and max(playback.sent_ms, playback.generated_ms) > 0:
+        if (
+            playback is not None
+            and max(playback.sent_ms, playback.generated_ms) > 0
+            and self.has_assistant_response_item(response_id, item_id)
+        ):
             return
         self._conversation.assistant_response_snapshots.pop(response_id, None)
         self.release_response_playback(response_id)
-        item_id = f"item_{response_id}"
         if item_id not in self._conversation.item_ids:
             self._discard_history_item_placeholder(item_id)
 
