@@ -1188,6 +1188,64 @@ async def test_stage_failure_on_draining_request_fails_that_response_only() -> N
         await close_harness(h)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["barge_in", "stage_failure"])
+@pytest.mark.parametrize("deleted", [False, True])
+async def test_interrupted_drain_releases_only_deleted_item_playback(termination: str, deleted: bool) -> None:
+    from dataclasses import replace
+
+    h = await open_harness()
+    try:
+        h.session.capabilities = replace(h.session.capabilities, supports_concurrent_turn_requests=True)
+        await h.run(append_audio())
+        request_id = h.stage0_request_id()
+        await h.deliver_and_settle(tts_output(request_id, samples=24000, text="hello"))
+        old_response = h.session.active_response_id
+        assert old_response is not None
+        item_id = f"item_{old_response}"
+        h.session.snapshot_active_response_for_drain()
+        # Multiple stage requests can drain for the same older response.
+        for draining_request in ("old-talker", "old-vocoder"):
+            h.session.bind_draining_request(draining_request, old_response)
+        active_response = h.session.begin_response(turn_id=h.session.turn_id + 1)
+        h.runner.emit({"type": "response.created", "response_id": active_response})
+        h.session.append_assistant_text("newer reply")
+        h.session.mark_audio_sent(duration_ms=250)
+        await h.settle()
+        if deleted:
+            events = await h.run(commands.DeleteItem(item_id=item_id))
+            assert types(events) == ["conversation.item.deleted"]
+        assert h.session.playback_for_response(old_response).sent_ms == 1000
+
+        if termination == "barge_in":
+            events = await h.run(commands.BargeIn())
+            assert h.port.aborts == [[request_id, "old-talker", "old-vocoder"]]
+            assert h.session.active_response_id is None
+        else:
+            h.runner.on_stage_failure(1, RuntimeError("drain failed"), request_id="old-talker")
+            events = await h.settle()
+            assert h.session.active_response_id == active_response
+        done = next(event for event in events if event.type == "response.done" and event.response_id == old_response)
+        assert done.status == ("cancelled" if termination == "barge_in" else "failed")
+        assert not h.session.response_has_draining_request(old_response)
+        assert h.session.playback_for_response(active_response).sent_ms == 250
+        assert (old_response in h.session._playback.by_response) is not deleted
+
+        ack = await h.run(commands.AckPlayback(response_id=old_response, played_ms=500))
+        if deleted:
+            assert types(ack) == ["error"]
+            assert ack[0].code == "playback_item_not_found"
+            assert old_response not in h.session._playback.by_response
+        else:
+            assert types(ack) == ["playback.acknowledged"]
+            assert h.session.playback_for_response(old_response).committed_ms == 500
+            events = await h.run(commands.TruncateItem(item_id=item_id, audio_end_ms=250))
+            assert types(events) == ["conversation.item.truncated", "playback.acknowledged"]
+            assert h.session.playback_for_response(old_response).committed_ms == 250
+    finally:
+        await close_harness(h)
+
+
 # --------------------------------------------------------------------------- #
 # Turn mode (no auto response)                                                #
 # --------------------------------------------------------------------------- #

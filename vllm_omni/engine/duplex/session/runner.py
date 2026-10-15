@@ -337,6 +337,8 @@ class DuplexSessionRunner:
             return
         if draining_response_id is not None:
             session.clear_draining_for_response(draining_response_id)
+            if not session.has_assistant_response_item(draining_response_id, f"item_{draining_response_id}"):
+                session.release_response_playback(draining_response_id)
             if isinstance(request_id, str):
                 session.request_resources.pop((stage_id, request_id), None)
         elif response_id == session.active_response_id:
@@ -1555,6 +1557,10 @@ class DuplexSessionRunner:
         for request_id in draining_ids:
             self.plugin.data_plane.close_stream(request_id)
         session.clear_draining_requests()
+        # Deleted items cannot accept the ACK that would retire a cancelled drain.
+        for response_id, _, _ in draining_cancels:
+            if not session.has_assistant_response_item(response_id, f"item_{response_id}"):
+                session.release_response_playback(response_id)
         if abort_ids:
             await self._abort_request_background(abort_ids, notify=notify)
         if has_running_task and active_task is not None:

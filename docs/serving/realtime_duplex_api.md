@@ -230,7 +230,9 @@ beyond it. Fully acknowledged recordings are released; deleting an item or
 closing a session releases its cache and invalidates pending work. Deleting an
 ended reply also releases its playback cursor, with or without calibration.
 If its TTS is still draining after a newer reply starts, the cursor is retained
-until that drain ends, then released because the deleted item cannot accept ACKs.
+until that drain completes, is cancelled or fails, then released because the
+deleted item cannot accept ACKs. Cancelled or failed drains whose items still
+exist retain their playback state for later ACKs and truncation.
 Realtime projection buffers are released when each response ends; its
 conversation item remains available until explicitly deleted. Late output or
 playback metadata reads cannot recreate the released buffers.
