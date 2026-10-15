@@ -742,6 +742,9 @@ async def test_barge_in_aborts_draining_tts_as_well_as_the_active_request() -> N
     release_abort = asyncio.Event()
     h.port.abort_gate = release_abort
     try:
+        # Admit the older response just as the model channel does before its
+        # first output; it remains live while the newer response is generated.
+        h.runner.emit({"type": "response.created", "response_id": "resp-old"})
         await h.run(append_audio())
         request_id = h.stage0_request_id()
         await h.deliver_and_settle(tts_output(request_id, samples=24000, text="he"))

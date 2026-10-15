@@ -607,3 +607,41 @@ async def test_eviction_revokes_pending_calibration_without_restoring_its_origin
     finally:
         release.set()
         await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("calibration_enabled", [False, True])
+@pytest.mark.parametrize("finished", [False, True])
+async def test_deleted_reply_releases_playback_and_rejects_late_ack(calibration_enabled, finished):
+    async def calibrate(snapshot):
+        return 5
+
+    h = await open_qwen(calibrate=calibrate if calibration_enabled else None, requires_audio=False)
+    try:
+        for _ in range(6):
+            await h.run(append_audio())
+            await h.run(Commit(final=True, create_response=True))
+            request = h.port.submissions[-1].context.request_id
+            response = h.session.active_response_id
+            item_id = f"item_{response}"
+            await h.deliver_and_settle(tts_output(request, samples=0, text=TEXT, finished=True), stage_id=0)
+            await h.deliver_and_settle(tts_output(request, samples=240000, finished=finished), stage_id=2)
+            await h.run(AckPlayback(response_id=response, played_ms=1000))
+            if not finished:
+                await h.run(CancelResponse())
+            await h.run(TruncateItem(item_id=item_id, audio_end_ms=1000))
+            controller = h.runner.ctx.history_calibration
+            if controller is not None:
+                await controller.before_prompt()
+            await h.run(DeleteItem(item_id=item_id))
+            assert response not in h.session._playback.by_response
+            assert response not in h.session._conversation.assistant_response_snapshots
+            assert item_id not in h.session.history_item_ids
+            if controller is not None:
+                assert not controller.audio and not controller.tasks
+            late = await h.run(AckPlayback(response_id=response, played_ms=10000))
+            assert [event.code for event in late if event.type == "error"] == ["playback_item_not_found"]
+            assert not h.session._playback.by_response
+            assert item_id not in h.session.history_item_ids
+    finally:
+        await h.manager.shutdown()

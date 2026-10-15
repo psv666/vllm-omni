@@ -1275,7 +1275,12 @@ class DuplexEngineSession:
         return playback
 
     def playback_for_response(self, response_id: str | None = None) -> DuplexPlaybackView:
-        return self._playback_cursor_for_response(response_id).snapshot()
+        # Reading late cancellation/output metadata must not recreate a retired
+        # cursor. Only generation and validated ACKs may allocate one.
+        if response_id is None:
+            return self._playback.current.snapshot()
+        playback = self._playback.by_response.get(response_id)
+        return playback.snapshot() if playback is not None else DuplexPlaybackCursor().snapshot()
 
     def acknowledge_playback(
         self,
@@ -1459,6 +1464,10 @@ class DuplexEngineSession:
         removed_placeholder = self._discard_history_item_placeholder(item_id)
         if response_id is not None:
             self._conversation.assistant_response_snapshots.pop(response_id, None)
+            # Deletion revokes future ACKs, so no ended reply needs its cursor.
+            # This also works without calibration or before cache eviction.
+            if not self.response_has_draining_request(response_id):
+                self.release_response_playback(response_id)
         if message is None:
             return pending is not None or removed_placeholder
         # Distinct response items can have identical (including empty) content.

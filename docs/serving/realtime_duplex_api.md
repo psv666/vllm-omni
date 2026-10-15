@@ -227,7 +227,11 @@ timeouts preserve the existing conservative history policy. Without an already
 confirmed prefix, partial playback leaves an empty assistant item. A permanent
 truncate can only tighten: late ACKs and calibration results cannot restore text
 beyond it. Fully acknowledged recordings are released; deleting an item or
-closing a session releases its cache and invalidates pending work.
+closing a session releases its cache and invalidates pending work. Deleting an
+ended reply also releases its playback cursor, with or without calibration.
+Realtime projection buffers are released when each response ends; its
+conversation item remains available until explicitly deleted. Late output or
+playback metadata reads cannot recreate the released buffers.
 
 Logs report calibration status and preprocessing, queueing, HTTP and matching
 durations, without audio or transcript content. Prompt preparation reports its
