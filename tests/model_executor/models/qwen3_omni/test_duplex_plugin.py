@@ -74,6 +74,17 @@ def test_buffer_refuses_video_frames_and_points_at_the_openai_interface():
     committed.commit()
 
 
+def test_capabilities_advertise_image_items_not_append_frames():
+    """Clients choose how to send frames from these fields; they must match the buffer's refusal."""
+    caps = Qwen3OmniDuplexPlugin(lambda audio, *args: "AAAA").capabilities(max_sessions=1)
+    assert caps.supports_image_input
+    assert not caps.accepts_input_modality("video")
+    assert caps.validate_append_modalities(has_audio=True, has_video=True) == (
+        "This duplex model does not accept video_frames"
+    )
+    assert caps.validate_append_modalities(has_audio=True, has_video=False) is None
+
+
 async def open_qwen(
     *, calibrate=None, calibration_timeout_ms=1000, history_max_bytes=8 * 1024 * 1024, requires_audio=True
 ):
