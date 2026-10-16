@@ -511,9 +511,12 @@ never supplies replacement history text or an ASR transcript to insert.
 ### Runtime sequence and guarded writeback
 
 1. `ModelChannel` records projected output in the controller. Under `ack_only`,
-   cancellation, truncation and a final playback acknowledgement can trigger
-   `request_ready()`. Only ended replies with a positive, partially played
-   cutoff are eligible; active replies and replies whose TTS still drains wait.
+   cancellation of a response or input, output-audio clearing, barge-in,
+   truncation and a final playback acknowledgement can trigger `request_ready()`.
+   Each prompt build also calls it through `before_prompt()`, re-evaluating
+   eligibility on every append. Only ended replies with a positive, partially
+   played cutoff are eligible; active replies and replies whose TTS still drains
+   wait.
 2. The controller captures the original text and cutoff, starts the callback
    with `asyncio.wait_for`, and identifies the task's evidence by
    `(text, cutoff, retained_audio_bytes)`. Changed evidence replaces the task;
@@ -596,9 +599,11 @@ cancels its tasks and releases its recordings.
   `tests/model_executor/models/minicpmo_4_5/duplex/**`,
   `tests/worker/test_native_duplex_hooks.py`.
 - Calibration CPU suites: `tests/engine/duplex/test_history_calibration.py`
-  covers task ownership, deadlines and evidence retirement;
-  `tests/model_executor/models/qwen3_omni/test_history_*.py` covers matching,
-  token-rate estimates and the calibrated history in the next submitted prompt.
+  covers cache eviction, live-suffix rejection and deferred retirement.
+  `tests/model_executor/models/qwen3_omni/test_history_integration.py` covers
+  task ownership, cancellation, prompt deadlines, failed-snapshot deduplication
+  and the calibrated history in the next submitted prompt. The remaining Qwen
+  `test_history_*.py` files cover prefix matching and token-rate estimates.
 - GPU: `examples/online_serving/minicpmo/realtime_duplex_demo.py` (one turn
   over the websocket), `examples/online_serving/barge_in_client.py` (cancel
   during playback; `--inline` drives the same scenario through
