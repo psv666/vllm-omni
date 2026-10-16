@@ -1285,7 +1285,7 @@ class DuplexEngineSession:
         self._playback.by_response.pop(response_id, None)
 
     def release_finished_drain_response(self, response_id: str | None) -> None:
-        """Drop unused books for a response whose TTS just finished.
+        """Drop unused books after a response's TTS drain ends for any reason.
 
         Overlap leaves the next turn active, so this must not call
         ``end_response``. Audio that was already sent stays ACK-admissible:

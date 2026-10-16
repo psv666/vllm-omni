@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-"""Experimental fixed speech-duration estimate; this provides no acoustic evidence."""
+"""Experimental speech-duration estimate; this provides no word-level alignment."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from vllm_omni.model_executor.models.qwen3_omni.duplex.history import text_units
 
 
 class QwenTokenRateCalibration:
-    """Estimate original-text offsets from configured speech milliseconds per token."""
+    """Use a reply's complete duration, falling back to configured milliseconds per token."""
 
     def __init__(self, tokenizer, ms_per_token: float) -> None:
         if not tokenizer.is_fast:
@@ -29,7 +29,11 @@ class QwenTokenRateCalibration:
         if len(units) > 2048:
             return None
         offsets = self.tokenizer(snapshot.text, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
-        count = min(len(offsets), math.floor(max(0, snapshot.played_ms - 160) / self.ms_per_token))
+        ms_per_token = self.ms_per_token
+        duration = snapshot.complete_audio_duration_ms
+        if offsets and duration is not None and duration > 0:
+            ms_per_token = duration / len(offsets)
+        count = min(len(offsets), math.floor(max(0, snapshot.played_ms - 160) / ms_per_token))
         if not count:
             return 0
         end = offsets[count - 1][1]
@@ -39,5 +43,5 @@ class QwenTokenRateCalibration:
             end = min(end, offsets[count][0])
         # Retain only whole English words / Chinese characters in original text.
         # This controller runs only for partial playback: withhold the final unit
-        # even if the fixed rate predicts that the entire reply has been spoken.
+        # even if the rate predicts that the entire reply has been spoken.
         return max((unit.end for unit in units[:-1] if unit.end <= end), default=0)

@@ -32,6 +32,8 @@ class HeardTextSnapshot:
 
     Audio is mono float32 PCM from the reply's start. A policy that does not
     require audio receives empty bytes and a zero sample rate instead.
+    The complete duration is supplied only after the final audio stage finishes;
+    an interrupted generation's partial duration cannot calibrate its full text.
     """
 
     response_id: str
@@ -39,6 +41,7 @@ class HeardTextSnapshot:
     pcm_f32le: bytes
     sample_rate_hz: int
     played_ms: int
+    complete_audio_duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +185,9 @@ class HistoryCalibration:
                 b"".join(audio.chunks),
                 audio.rate,
                 cutoff,
+                complete_audio_duration_ms=(
+                    max(playback.generated_ms, playback.sent_ms) if playback.audio_complete else None
+                ),
             )
             self.tasks[response_id] = asyncio.create_task(self._run(snapshot, version))
 

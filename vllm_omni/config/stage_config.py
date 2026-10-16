@@ -642,7 +642,7 @@ class DuplexSessionRuntimeConfig:
     history_asr_url: str | None = None
     history_asr_model: str | None = None
     history_asr_max_concurrency: int = 4
-    # Alternative opt-in estimate using speech duration per Thinker text token.
+    # Opt-in token-rate estimate; fallback ms/token when audio generation is incomplete.
     history_ms_per_token: float | None = None
     history_calibration_timeout_ms: int = 1000
     history_audio_max_bytes_per_session: int = 8 * 1024 * 1024

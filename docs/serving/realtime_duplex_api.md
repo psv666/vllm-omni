@@ -49,8 +49,9 @@ empty assistant turn. History calibration can retain a prefix of the original
 reply before the next prompt is prepared. Choose one of two experimental
 strategies in a server-side deployment overlay:
 
-- **Fixed token rate:** estimate the prefix from playback time and a configured
-  speech duration per text token. Requires no ASR service or output-audio cache.
+- **Token rate:** estimate the prefix from playback time and the reply's complete
+  audio duration, with a configured rate for interrupted generation. Requires no
+  ASR service or output-audio cache.
 - **ASR prefix matching:** transcribe the played audio and match it against the
   original reply. Requires a separately deployed transcription service.
 
@@ -59,7 +60,7 @@ to Qwen3-Omni in `session_mode: duplex`, with `playback_commit_policy: ack_only`
 and playback speed 1. Other playback policies and speeds retain their existing
 behavior. These deployment settings cannot be changed by `session.update`.
 
-#### Configure a fixed token rate
+#### Configure token-rate estimation
 
 Save this as `qwen3_history.yaml`, replacing `base_config` with the absolute path
 to the repository's Qwen3-Omni duplex deployment:
@@ -72,19 +73,26 @@ duplex_session:
 ```
 
 The example 383 ms/token was selected through WebUI playback testing for one
-deployment. It is audio duration per text token, not model generation time per
-token, and is not a model-wide default. Check it for the language, voice and
-speaking style of your deployment.
+deployment. It is the fallback audio duration per text token when generation was
+interrupted, not model generation time per token or a model-wide default. Check
+it for the language, voice and speaking style of your deployment.
 
 The plugin uses the existing processor's fast tokenizer without special tokens
-and estimates `floor(max(0, played_ms - 160) / history_ms_per_token)` tokens.
+and estimates `floor(max(0, played_ms - 160) / ms_per_token)` tokens. Once the
+final audio stage has completed the reply, `ms_per_token` is that reply's total
+audio duration divided by its text token count. This adapts to each complete
+reply without sharing learned state across sessions. If audio generation was
+interrupted, `ms_per_token` falls back to `history_ms_per_token`: Thinker may have
+already produced all the text while audio synthesis is still incomplete, so
+dividing full text by partial audio would overestimate the speaking rate.
 It rounds down to whole English words or Chinese characters using original text
 offsets, accounts for overlapping byte tokens, and withholds the final unit of
 the reply during partial playback. Text longer than 8192 characters or 2048
 matching units is refused before tokenization.
 
-A fixed rate can retain unheard text when a phrase is slower than the configured
-rate. The time margin and downward rounding do not eliminate this error. This
+Both a reply's average rate and the configured fallback can retain unheard text
+when a phrase is spoken more slowly. Total duration does not provide word-level
+alignment; the time margin and downward rounding do not eliminate this error. This
 strategy is an explicit alternative to ASR, not an automatic fallback after an
 ASR timeout.
 
@@ -231,8 +239,11 @@ closing a session releases its cache and invalidates pending work. Deleting an
 ended reply also releases its playback cursor, with or without calibration.
 If its TTS is still draining after a newer reply starts, the cursor is retained
 until that drain completes, is cancelled or fails, then released because the
-deleted item cannot accept ACKs. Cancelled or failed drains whose items still
-exist retain their playback state for later ACKs and truncation.
+deleted item cannot accept ACKs. Drains that produced no audio also release
+their snapshot, cursor and unused history placeholder on every exit path.
+Cancelled or failed drains with audio and an existing item retain playback
+state for later ACKs and truncation. Failure events report the failed reply's
+own playback cursor even when a newer reply is active.
 Realtime projection buffers are released when each response ends; its
 conversation item remains available until explicitly deleted. Late output or
 playback metadata reads cannot recreate the released buffers.

@@ -69,6 +69,31 @@ async def test_rate_accepts_unit_limit_and_withholds_final_unit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("complete_duration_ms", "played_ms", "expected"),
+    [
+        (3000, 1159, ""),
+        (3000, 1160, "今天"),
+        (3000, 2160, "今天很"),
+        (3000, 10000, "今天很"),
+        (300, 259, ""),
+        (300, 260, "今天"),
+        (None, 543, "今天"),
+        (0, 543, "今天"),
+    ],
+)
+async def test_rate_uses_complete_audio_duration_and_falls_back_for_interrupted_audio(
+    complete_duration_ms, played_ms, expected
+):
+    text = "今天很好"
+    calibrate = QwenTokenRateCalibration(OffsetTokenizer([(0, 2), (2, 3), (3, 4)]), 383)
+    snapshot = HeardTextSnapshot("r", text, b"", 0, played_ms, complete_audio_duration_ms=complete_duration_ms)
+    assert text[: await calibrate(snapshot)] == expected
+    # The shared plugin callback must not carry this reply's rate into another session.
+    assert text[: await calibrate(HeardTextSnapshot("other", text, b"", 0, 543))] == "今天"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("played_ms", "expected"), [(542, ""), (543, "今天"), (925, "今天"), (926, "今天很")])
 async def test_configured_383_rate_rounds_down_after_audio_margin(played_ms, expected):
     plugin = Qwen3OmniDuplexPlugin(lambda *args: "")

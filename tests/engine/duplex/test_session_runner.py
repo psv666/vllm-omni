@@ -1227,6 +1227,7 @@ async def test_interrupted_drain_releases_only_deleted_item_playback(termination
             assert h.session.active_response_id == active_response
         done = next(event for event in events if event.type == "response.done" and event.response_id == old_response)
         assert done.status == ("cancelled" if termination == "barge_in" else "failed")
+        assert done.response["metadata"]["playback"]["sent_ms"] == 1000
         assert not h.session.response_has_draining_request(old_response)
         assert h.session.playback_for_response(active_response).sent_ms == 250
         assert (old_response in h.session._playback.by_response) is not deleted
@@ -1242,6 +1243,43 @@ async def test_interrupted_drain_releases_only_deleted_item_playback(termination
             events = await h.run(commands.TruncateItem(item_id=item_id, audio_end_ms=250))
             assert types(events) == ["conversation.item.truncated", "playback.acknowledged"]
             assert h.session.playback_for_response(old_response).committed_ms == 250
+    finally:
+        await close_harness(h)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["barge_in", "stage_failure"])
+async def test_interrupted_silent_drain_releases_snapshot_cursor_and_placeholder(termination: str) -> None:
+    from dataclasses import replace
+
+    h = await open_harness()
+    try:
+        h.session.capabilities = replace(h.session.capabilities, supports_concurrent_turn_requests=True)
+        await h.run(append_audio())
+        old_response = h.session.begin_response(turn_id=h.session.turn_id)
+        h.runner.emit({"type": "response.created", "response_id": old_response})
+        h.session.append_assistant_text("not yet spoken")
+        h.session.snapshot_active_response_for_drain()
+        h.session.bind_draining_request("silent-talker", old_response)
+        active_response = h.session.begin_response(turn_id=h.session.turn_id + 1)
+        h.runner.emit({"type": "response.created", "response_id": active_response})
+        h.session.append_assistant_text("newer reply")
+        h.session.mark_audio_sent(duration_ms=250)
+        await h.settle()
+
+        if termination == "barge_in":
+            events = await h.run(commands.BargeIn())
+        else:
+            h.runner.on_stage_failure(1, RuntimeError("silent drain failed"), request_id="silent-talker")
+            events = await h.settle()
+            assert h.session.active_response_id == active_response
+        done = next(event for event in events if event.type == "response.done" and event.response_id == old_response)
+        assert done.response["metadata"]["playback"]["sent_ms"] == 0
+        assert not h.session.response_has_draining_request(old_response)
+        assert old_response not in h.session._conversation.assistant_response_snapshots
+        assert old_response not in h.session._playback.by_response
+        assert f"item_{old_response}" not in h.session._conversation.history_item_placeholders
+        assert h.session.playback_for_response(active_response).sent_ms == 250
     finally:
         await close_harness(h)
 

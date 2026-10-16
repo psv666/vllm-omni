@@ -42,6 +42,7 @@ async def test_text_only_estimator_shares_history_fences_without_caching_pcm():
     async def estimate(snapshot):
         assert snapshot.pcm_f32le == b""
         assert snapshot.sample_rate_hz == 0
+        assert snapshot.complete_audio_duration_ms == 10000
         return 5 if snapshot.played_ms >= 1000 else 0
 
     h = await open_qwen(calibrate=estimate, requires_audio=False, history_max_bytes=1)
@@ -289,6 +290,8 @@ async def test_oversized_audio_falls_back_without_sending_a_suffix_to_asr():
 @pytest.mark.asyncio
 async def test_cancelled_generation_calibrates_across_epoch_change():
     async def calibrate(snapshot):
+        # Thinker already finished all text, but Code2Wav was cancelled mid-audio.
+        assert snapshot.complete_audio_duration_ms is None
         return 5
 
     h = await open_qwen(calibrate=calibrate)
