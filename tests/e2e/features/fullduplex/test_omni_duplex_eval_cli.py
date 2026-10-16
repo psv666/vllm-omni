@@ -138,7 +138,35 @@ def test_cli_generate_evaluate_summarize_flow(tmp_path: Path, monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_generate_exercises_realtime_socket_and_media_clock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("cached", [False, True])
+async def test_generate_rejects_unpaced_server_vad_before_preparation_or_cache(tmp_path, monkeypatch, cached):
+    sample = DuplexSample.from_row({"id": "sample", "split": "PR_correction"})
+    if cached:
+        output = tmp_path / sample.split / f"{sample.id}.json"
+        output.parent.mkdir()
+        output.write_text("[]")
+
+    def unexpected_preparation(*args, **kwargs):
+        pytest.fail("invalid pacing must be rejected before preparing media")
+
+    monkeypatch.setattr(runner, "prepare_sample", unexpected_preparation)
+    with pytest.raises(ValueError, match="server_vad requires pace='realtime'"):
+        await runner.generate_sample(
+            sample,
+            url="ws://unused",
+            model="mock",
+            ref_audio=None,
+            output_root=tmp_path,
+            turn_detection="server_vad",
+            pace="as-fast-as-possible",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pace", ["realtime", "as-fast-as-possible"])
+async def test_generate_exercises_realtime_socket_and_media_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pace: str
+):
     import websockets
 
     received = []
@@ -190,6 +218,7 @@ async def test_generate_exercises_realtime_socket_and_media_clock(tmp_path: Path
             model="mock",
             ref_audio=ref,
             output_root=tmp_path / "responses",
+            pace=pace,
         )
 
     assert json.loads(result.output.read_text(encoding="utf-8")) == [{"sentence": "Done.", "start": 0.8, "end": 0.8}]
@@ -197,6 +226,7 @@ async def test_generate_exercises_realtime_socket_and_media_clock(tmp_path: Path
     assert meta["response_done"] is True
     assert meta["drain_timeout"] is None
     assert meta["unit_ms"] == 1000
+    assert meta["clock"] == ("media" if pace == "realtime" else "invalid")
     assert len([event for event in received if event["type"] == "input_audio_buffer.append"]) == 1
     assert "duplex_request_metrics" not in meta
     assert result.request_metrics
@@ -279,7 +309,6 @@ async def test_generate_server_vad_sends_image_items_and_waits_for_server_turns(
             output_root=tmp_path / "responses",
             instructions=None,
             turn_detection="server_vad",
-            pace="as-fast-as-possible",
         )
 
     # A large append can contain both an endpoint and a new onset. The first

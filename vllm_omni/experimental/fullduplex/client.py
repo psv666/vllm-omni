@@ -386,6 +386,7 @@ class RealtimeDuplexClient:
         """
         audio_end_ms = 0
         frames_sent = 0
+        started_at = time.monotonic()
         for chunk, frame in units:
             if not chunk:
                 continue
@@ -413,7 +414,9 @@ class RealtimeDuplexClient:
                 frames_sent += 1
             await self.send(event)
             if realtime:
-                await asyncio.sleep(duration_ms / 1000)
+                # Encoding, frame delivery and send time consume this unit's
+                # budget; sleeping a full unit after them accumulates drift.
+                await asyncio.sleep(max(0.0, started_at + audio_end_ms / 1000 - time.monotonic()))
         return frames_sent
 
     async def commit(self) -> None:

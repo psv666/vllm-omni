@@ -194,14 +194,18 @@ async def generate_sample(
     ``server_vad`` uses one detector frame per append, overriding the native
     ``unit_ms`` setting while keeping the decoded video samples unchanged.
     """
+    if pace not in {"realtime", "as-fast-as-possible"}:
+        raise ValueError("pace must be realtime or as-fast-as-possible")
+    if turn_detection not in TURN_DETECTION_MODES:
+        raise ValueError(f"turn_detection must be one of {TURN_DETECTION_MODES}")
+    server_turns = turn_detection == TURN_DETECTION_SERVER_VAD
+    if server_turns and pace != "realtime":
+        raise ValueError("server_vad requires pace='realtime' to preserve turn and playback timing")
     output = Path(output_root) / sample.split / f"{sample.id}.json"
     if not defer_artifacts and output.exists() and not overwrite:
         return GenerateSampleResult(output=output)
     if mix != "question":
         raise NotImplementedError("v1 supports mix=question; soundtrack mixing is reserved for P1")
-    if turn_detection not in TURN_DETECTION_MODES:
-        raise ValueError(f"turn_detection must be one of {TURN_DETECTION_MODES}")
-    server_turns = turn_detection == TURN_DETECTION_SERVER_VAD
     if server_turns:
         unit_ms = SERVER_VAD_FRAME_MS
     if prepared is None:
@@ -215,8 +219,6 @@ async def generate_sample(
         # No final commit: trailing silence lets the VAD close the last turn.
         pcm += bytes(round(SERVER_VAD_TAIL_S * PCM16_SAMPLE_RATE) * PCM16_BYTES_PER_SAMPLE)
     realtime = pace == "realtime"
-    if pace not in {"realtime", "as-fast-as-possible"}:
-        raise ValueError("pace must be realtime or as-fast-as-possible")
     client = RealtimeDuplexClient(
         build_realtime_url(url, model, autostart=False), additional_headers=additional_headers
     )

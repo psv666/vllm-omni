@@ -89,7 +89,12 @@ def add_cli_args(parser: argparse.ArgumentParser) -> None:
     generate.add_argument("--response-root", required=True)
     generate.add_argument("--fps", type=float, default=1.0)
     generate.add_argument("--mix", choices=("question",), default="question")
-    generate.add_argument("--pace", choices=("realtime", "as-fast-as-possible"), default="realtime")
+    generate.add_argument(
+        "--pace",
+        choices=("realtime", "as-fast-as-possible"),
+        default="realtime",
+        help="Input pacing; server_vad requires realtime to preserve turn and playback timing.",
+    )
     generate.add_argument("--clock", choices=("media",), default="media")
     generate.add_argument("--concurrency", type=int, default=1)
     generate.add_argument("--overwrite", action="store_true")

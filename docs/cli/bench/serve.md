@@ -337,7 +337,11 @@ runner's explicit commit. With `server_vad`, the runner sends audio in 32 ms app
 observed speech/responses to settle. A larger append can span the end of one turn
 and the start of the next, hiding the earlier endpoint. Video sampling still uses
 `--duplex-eval-fps`; native duplex retains its 1000 ms default audio units. The
-sample metadata records the effective `unit_ms`. Settling is not an acknowledgement
+sample metadata records the effective `unit_ms`. Audio pacing uses a cumulative
+monotonic deadline so sending and frame processing do not add a full extra sleep
+to every append. The standalone `generate` command rejects `server_vad` combined
+with `--pace as-fast-as-possible`, which compresses turn and playback timing.
+Settling is not an acknowledgement
 that all final input has been processed. Frames use the transport advertised by
 the server: native video frames or bounded image conversation items for Qwen3.
 `--duplex-eval-instructions` defaults to the native duplex prompt; passing an empty
@@ -353,6 +357,10 @@ complete artifacts, completed observed responses and measured text/audio latency
 for every session; judging must cover every selected PR sample. Scores are reported
 without a quality threshold. RTD scoring requires a vision-capable judge and is
 outside this configuration. No hardware latency baseline is configured.
+These nightly checks do not establish that every input utterance produced a
+response. The dataset provides no expected VAD turn count, and a `PR_correction`
+sample can contain a single user statement, so a blanket two-response minimum is
+not valid. Deterministic CPU tests cover adjacent speech boundaries separately.
 
 Inputs retain the standalone runner's real-time pacing, question audio, media
 clock and 1 FPS default (`--duplex-eval-fps`). Each session decodes its media in a
