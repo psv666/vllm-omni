@@ -57,6 +57,36 @@ vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni --port 8091 \
 Captioner / Thinking checkpoints (`enable_audio_output=false`) still auto-select
 the same single-stage pipeline without `--deploy-config`.
 
+### Noisy audio on B200 or B300
+
+With NVIDIA B200/B300 and cuDNN **9.20.0.48**, Qwen3-Omni has been reported to
+produce quiet, hoarse audio near the start of each reply through both
+`/v1/chat/completions` and `/v1/realtime`. The reports identify incorrect
+low-precision convolution results in Code2Wav for certain input lengths;
+see [issue #8935](https://github.com/vllm-project/vllm-omni/issues/8935).
+
+For the bundled three-stage deployment, run **Code2Wav (stage 2) in float32**
+to work around the affected cuDNN version:
+
+```bash
+vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct --omni --port 8091 \
+    --stage-overrides '{"2": {"dtype": "float32"}}'
+```
+
+This sets the waveform decoder's precision independently of the Thinker and
+Talker. For a custom deployment YAML, set `dtype: float32` on its Code2Wav
+stage. With the stage-based CLI below, add `--dtype float32` to the stage 2
+command.
+
+Alternatively, use a compatible vLLM/PyTorch stack with a corrected cuDNN.
+cuDNN **9.21.0.82** and **9.24.0.43** were
+[reported to resolve the problem on B300](https://github.com/vllm-project/vllm-omni/issues/8935#issuecomment-6209075354).
+Check the loaded runtime in the server's Python environment:
+
+```bash
+python -c 'import torch; print("torch:", torch.__version__, "CUDA:", torch.version.cuda, "cuDNN:", torch.backends.cudnn.version())'
+```
+
 ### Launch individual stages (stage-based CLI)
 
 Adopt the stage-based CLI architecture to independently instantiate execution processes per functional stage.
