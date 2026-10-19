@@ -87,3 +87,74 @@ def test_valid_video_cache_is_reused(mocker, synthetic_audio, tmp_path, embed_au
     assert cached["base64"] == result["base64"]
     assert cached["file_path"] == result["file_path"]
     assert np.array_equal(cached["np_array"], media._np_array_from_mp4_bytes(base64.b64decode(result["base64"])))
+
+
+@pytest.mark.parametrize("corruption", ["empty", "invalid-header", "truncated-audio"])
+def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruption):
+    result = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+    cache_path = Path(result["file_path"])
+    raw = cache_path.read_bytes()
+    if corruption == "empty":
+        corrupt = b""
+    elif corruption == "invalid-header":
+        corrupt = b"not an MP4"
+    else:
+        with av.open(io.BytesIO(raw)) as container:
+            packets = [packet for packet in container.demux(audio=0) if packet.pos is not None and packet.size]
+        packet = packets[len(packets) // 2]
+        corrupt = raw[: packet.pos + packet.size // 2]
+        # +faststart leaves the stream metadata readable despite missing data.
+        with av.open(io.BytesIO(corrupt)) as container:
+            assert container.streams.audio
+    cache_path.write_bytes(corrupt)
+
+    repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+
+    repaired_bytes = base64.b64decode(repaired["base64"])
+    assert repaired_bytes == cache_path.read_bytes()
+    assert repaired_bytes != corrupt
+    assert repaired["np_array"].shape == (6, 64, 64, 3)
+    with av.open(io.BytesIO(repaired_bytes)) as container:
+        assert sum(frame.samples for frame in container.decode(audio=0)) > 0
+
+
+def test_video_cache_is_published_atomically(monkeypatch, synthetic_audio, tmp_path):
+    original = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+    cache_path = Path(original["file_path"])
+    old_bytes = cache_path.read_bytes()
+    replace = media.os.replace
+    published = []
+
+    def observe_replace(source, destination):
+        source = Path(source)
+        assert Path(destination) == cache_path
+        assert source.parent == cache_path.parent
+        # Until publication, readers must still see the old complete MP4.
+        assert cache_path.read_bytes() == old_bytes
+        completed = source.read_bytes()
+        with av.open(io.BytesIO(completed)) as container:
+            assert len(list(container.decode(video=0))) == 6
+        with av.open(io.BytesIO(completed)) as container:
+            assert sum(frame.samples for frame in container.decode(audio=0)) > 0
+        published.append(completed)
+        replace(source, destination)
+
+    monkeypatch.setattr(media.os, "replace", observe_replace)
+    result = media.generate_synthetic_video(64, 64, 6, embed_audio=True, force_regenerate=True, cache_dir=tmp_path)
+
+    assert published == [cache_path.read_bytes()]
+    assert base64.b64decode(result["base64"]) == published[0]
+    assert list(tmp_path.iterdir()) == [cache_path]
+
+
+def test_failed_cache_publication_preserves_old_file(mocker, synthetic_audio, tmp_path):
+    original = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+    cache_path = Path(original["file_path"])
+    old_bytes = cache_path.read_bytes()
+    mocker.patch.object(media.os, "replace", side_effect=OSError("publication failed"))
+
+    with pytest.raises(OSError, match="publication failed"):
+        media.generate_synthetic_video(64, 64, 6, embed_audio=True, force_regenerate=True, cache_dir=tmp_path)
+
+    assert cache_path.read_bytes() == old_bytes
+    assert list(tmp_path.iterdir()) == [cache_path]

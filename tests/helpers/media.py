@@ -372,7 +372,8 @@ def generate_synthetic_video(
     default temp subdirectory.
 
     ``embed_audio=True`` requires successful TTS generation and FFmpeg muxing.
-    Cached MP4s without the requested audio stream are regenerated.
+    Cached MP4s with corrupt/incomplete media or without the requested audio
+    stream are regenerated. Cache files are published atomically.
     """
     root = _resolve_synthetic_media_cache_dir(cache_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -384,15 +385,34 @@ def generate_synthetic_video(
         if embed_audio:
             import av
 
-            with av.open(io.BytesIO(video_bytes)) as container:
-                has_required_audio = bool(container.streams.audio)
+            try:
+                with av.open(io.BytesIO(video_bytes)) as container:
+                    has_required_audio = False
+                    if container.streams.audio:
+                        audio_stream = container.streams.audio[0]
+                        samples = sum(frame.samples for frame in container.decode(audio=0))
+                        expected_samples = 0
+                        if audio_stream.duration is not None and audio_stream.time_base is not None:
+                            expected_samples = math.ceil(
+                                audio_stream.duration * audio_stream.time_base * audio_stream.codec_context.sample_rate
+                            )
+                        has_required_audio = samples > 0 and samples >= expected_samples
+            except av.error.FFmpegError:
+                has_required_audio = False
         if has_required_audio:
-            return {
-                "np_array": _np_array_from_mp4_bytes(video_bytes),
-                "base64": base64.b64encode(video_bytes).decode("utf-8"),
-                "file_path": str(cache_path.resolve()),
-            }
-        logger.warning("Cached synthetic video %s has no audio stream; regenerating.", cache_path)
+            try:
+                cached_frames = _np_array_from_mp4_bytes(video_bytes)
+            except RuntimeError:
+                cached_frames = None
+            if cached_frames is not None and len(cached_frames) == num_frames:
+                return {
+                    "np_array": cached_frames,
+                    "base64": base64.b64encode(video_bytes).decode("utf-8"),
+                    "file_path": str(cache_path.resolve()),
+                }
+        logger.warning(
+            "Cached synthetic video %s is incomplete or lacks the requested audio; regenerating.", cache_path
+        )
 
     import cv2
     import imageio
@@ -473,7 +493,13 @@ def generate_synthetic_video(
         else video_only_bytes
     )
 
-    cache_path.write_bytes(video_bytes)
+    temp_cache = tempfile.NamedTemporaryFile(dir=root, prefix=f".{cache_path.name}.", suffix=".tmp", delete=False)
+    try:
+        with temp_cache:
+            temp_cache.write(video_bytes)
+        os.replace(temp_cache.name, cache_path)
+    finally:
+        Path(temp_cache.name).unlink(missing_ok=True)
 
     return {
         "np_array": np.array(video_frames),
