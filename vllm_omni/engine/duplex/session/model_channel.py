@@ -387,6 +387,12 @@ class ModelChannel:
         try:
             session.begin_lease_operation(fence, lease_operation_id)
             operation_started = True
+            if self._ctx.history_calibration is not None:
+                await self._ctx.history_calibration.before_prompt()
+                if session.epoch != fence.epoch or session.state != DuplexSessionState.OPEN:
+                    raise DuplexFenceMismatchError(session.fence, fence)
+            # Calibration can change history and response-owned runtime together.
+            # Freeze the request only after that wait and its close/epoch fence.
             reservation = session.prepare_append(fence)
             already_submitted = False if not resumable else session.stage_request_submitted(stage_id, request_id)
             request_context = self._ctx.manager.ensure_stage_request(
@@ -401,10 +407,6 @@ class ModelChannel:
                 request_id = request_context.request_id
             if not already_submitted:
                 session.request_resources[(stage_id, request_id)].input_audio_part = input_audio_part
-            if self._ctx.history_calibration is not None:
-                await self._ctx.history_calibration.before_prompt()
-                if session.epoch != fence.epoch or session.state != DuplexSessionState.OPEN:
-                    raise DuplexFenceMismatchError(session.fence, fence)
             prompt_payload: dict[str, object] = (
                 {str(key): value for key, value in payload.items()} if isinstance(payload, Mapping) else {}
             )

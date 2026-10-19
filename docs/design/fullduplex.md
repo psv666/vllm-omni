@@ -668,13 +668,16 @@ never supplies replacement history text or an ASR transcript to insert.
    `(text, cutoff, retained_audio_bytes)`. Changed evidence replaces the task;
    unchanged evidence is not retried after failure. Callback failure, refusal
    or timeout preserves the existing conservative history policy.
-3. Before `prepare_prompt_config` reads the conversation,
+3. Before freezing the stage request's runtime and preparing its conversation,
    `ModelChannel._append_via_data_plane` awaits `before_prompt()`. This has one
    `history_calibration_timeout_ms` budget (default 1000 ms) for all eligible
    tasks, including replacements; replacement work does not extend it. At the
    deadline, the controller revokes task ownership and cancels pending work.
    The append then checks the session epoch and open state before continuing,
    so cancellation or close during the wait cannot submit a stale prompt.
+   History and tool runtime are captured after the wait, so a calibration that
+   consumes a tool pair cannot leave that pair beside its stored answer in
+   the submitted prompt.
 4. A result may write back only while its controller is open, its task still
    owns that response and its evidence version still matches. The session
    additionally checks that the original response snapshot and conversation
@@ -688,7 +691,10 @@ never supplies replacement history text or an ASR transcript to insert.
    stored assistant item has nonempty text, the runner settles that response's
    runtime as committed, just as a playback ACK does. Qwen then consumes its
    tool pair without requiring another ACK. An empty prefix keeps the pair
-   available for a retry.
+   available for a retry, including late ACKs after its evidence is retired.
+   Settlement runs outside the calibration-failure handler. A plugin failure
+   while settling a stored answer emits `tool_call_settlement_failed` and closes
+   that session; it cannot continue with history and tool runtime out of sync.
 
 ### Evidence lifetime and limits
 

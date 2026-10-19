@@ -262,7 +262,7 @@ class DuplexSessionRunner:
                 max_bytes=manager.runtime_config.history_audio_max_bytes_per_session,
                 timeout_s=manager.runtime_config.history_calibration_timeout_ms / 1000,
                 requires_audio=calibration.requires_audio,
-                on_applied=self._settle_calibrated_answer,
+                on_applied=self._settle_stored_answer,
             )
         self.model = ModelChannel(
             self.ctx,
@@ -656,11 +656,21 @@ class DuplexSessionRunner:
             return
         logger.warning("Unknown duplex runner internal item: %s", item.kind)
 
-    def _settle_calibrated_answer(self, response_id: str) -> None:
-        """Consume response-owned runtime only after calibration stores text."""
+    def _settle_stored_answer(self, response_id: str | None) -> None:
+        """Settle only a nonempty stored answer; close on unsafe tool state."""
+        if response_id is None:
+            return
         message = self.session.history_item_ids.get(f"item_{response_id}")
-        if message is not None and isinstance(content := message.get("content"), str) and content:
+        content = message.get("content") if message is not None else None
+        if not isinstance(content, str) or not content:
+            return
+        try:
             settle_response_runtime(self.plugin, self.session, committed=True, response_id=response_id)
+        except Exception:
+            logger.exception("Failed to settle runtime for a stored assistant answer")
+            self._emit_error("tool_call_settlement_failed", "the session could not settle a stored assistant answer")
+            self._begin_close("tool_call_settlement_failed")
+            self.manager.close_from_runner(self, "tool_call_settlement_failed")
 
     def _settle_playback_committed_answer(self, events) -> None:
         """Drop a tool pair only when this ACK stored that response's answer."""
@@ -674,7 +684,7 @@ class DuplexSessionRunner:
             response_id = (
                 item_id.removeprefix("item_") if isinstance(item_id, str) and item_id.startswith("item_") else None
             )
-            settle_response_runtime(self.plugin, self.session, committed=True, response_id=response_id)
+            self._settle_stored_answer(response_id)
 
     async def _run_internal_payload(self, payload: dict[str, object]) -> None:
         """Run one internal event dictionary through the matching handler."""

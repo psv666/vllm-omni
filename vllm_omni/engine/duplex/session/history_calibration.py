@@ -205,6 +205,7 @@ class HistoryCalibration:
         started = time.monotonic()
         status = "refused"
         retained_chars = 0
+        applied = False
         try:
             char_end = await asyncio.wait_for(self.calibrate(snapshot), timeout=self.timeout_s)
             if (
@@ -222,8 +223,6 @@ class HistoryCalibration:
                 )
                 status = "applied" if applied else "stale_or_invalid"
                 retained_chars = char_end if applied else 0
-                if applied and self.on_applied is not None:
-                    self.on_applied(snapshot.response_id)
         except asyncio.CancelledError:
             status = "cancelled"
             raise
@@ -242,6 +241,10 @@ class HistoryCalibration:
             )
             if self.tasks.get(snapshot.response_id) is asyncio.current_task():
                 self.tasks.pop(snapshot.response_id, None)
+        # Writeback is complete. Runtime settlement owns its failure policy;
+        # it must not be mistaken for a refused or failed calibration.
+        if applied and self.on_applied is not None:
+            self.on_applied(snapshot.response_id)
 
     async def before_prompt(self) -> None:
         """Wait within one deadline for eligible work, including replacements."""
