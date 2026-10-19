@@ -30,7 +30,7 @@ Only the subprocess accuracy marker::
 
     pytest -sv tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py -m qwen3_omni_acc
 
-Skip when you do not have GPUs, a server, or datasets (CI opt-out)::
+Skip when you do not have GPUs/NPUs, a server, or datasets (CI opt-out)::
 
     VLLM_SKIP_ACC_BENCH=1 pytest -sv tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py
 
@@ -75,7 +75,7 @@ def get_chunk_config(config_path: str | None = None):
 
 if current_omni_platform.is_xpu():
     stage_configs = [_CI_DEPLOY]
-else:  # CUDA + ROCm MI325 share the same deploy config
+else:  # CUDA, ROCm MI325 and NPU A3 share the same deploy config
     stage_configs = [get_chunk_config()]
 
 test_params = [
@@ -110,7 +110,7 @@ def _daily_omni_hub_inline_media(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
 
-@hardware_test(res={"cuda": ["H100", "B200"], "rocm": "MI325"}, num_cards=2)
+@hardware_test(res={"cuda": ["H100", "B200"], "rocm": "MI325", "npu": "A3"}, num_cards=2)
 @pytest.mark.parametrize("omni_server", test_params, indirect=True)
 def test_qwen3_omni_daily_omni_accuracy_bench(omni_server) -> None:
     _require_vllm_cli()
@@ -122,7 +122,7 @@ def test_qwen3_omni_daily_omni_accuracy_bench(omni_server) -> None:
     assert _acc_bench.run_acc_benchmark(ns) == 0
 
 
-@hardware_test(res={"cuda": ["H100", "B200"], "rocm": "MI325"}, num_cards=2)
+@hardware_test(res={"cuda": ["H100", "B200"], "rocm": "MI325", "npu": "A3"}, num_cards=2)
 @pytest.mark.parametrize("omni_server", test_params, indirect=True)
 def test_qwen3_omni_seed_tts_wer_bench(omni_server) -> None:
     _require_vllm_cli()

@@ -6,7 +6,7 @@
 The standalone CLI uses small ``--num-prompts`` / ``--max-concurrency`` defaults suitable for
 L4-style smoke runs against an already-running server. The pytest wrappers in
 ``tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py`` may still require larger GPUs (currently
-H100 / MI325) because they launch the live Omni server inside the test.
+H100 / MI325 / Atlas A3 NPU) because they launch the live Omni server inside the test.
 
 1. **Daily-Omni** — MCQ accuracy fields in the saved JSON (``daily_omni_accuracy``, …); by default the
    run **fails** if accuracy is strictly below **0.69** (``--min-daily-omni-accuracy`` / ``ACC_BENCH_MIN_DAILY_OMNI_ACCURACY``).
