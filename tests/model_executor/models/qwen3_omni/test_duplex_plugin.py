@@ -1085,6 +1085,81 @@ async def test_late_playback_ack_stores_the_answer_and_drops_the_tool_pair(raw_a
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trailing_ack", [False, True])
+@pytest.mark.parametrize(
+    ("char_end", "heard"),
+    [
+        (5, "sunny"),
+        (0, ""),
+        (None, ""),
+        (99, ""),
+    ],
+    ids=["nonempty", "empty", "refused", "invalid"],
+)
+async def test_interrupted_tool_answer_calibration_settles_without_another_ack(char_end, heard, trailing_ack):
+    text = "sunny answer"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def calibrate(snapshot):
+        assert snapshot.text == text
+        assert snapshot.played_ms == 500
+        entered.set()
+        await release.wait()
+        return char_end
+
+    h = await open_qwen(calibrate=calibrate)
+    try:
+        h.session.append_history_message({"role": "user", "content": "what is the weather in Paris"})
+        projector = h.runner.out.require_projector()
+        projector.conversation_items["item_call"] = {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": '{"city":"Paris"}',
+        }
+        await h.run(
+            CreateItem(
+                item=normalize_conversation_item(
+                    {"type": "function_call_output", "call_id": "call_1", "output": "18C"}
+                ),
+            )
+        )
+        await h.run(CreateResponse())
+        request_id = h.port.submissions[-1].context.request_id
+        response_id = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request_id, samples=0, text=text, finished=True), stage_id=0)
+        await h.deliver_and_settle(tts_output(request_id, samples=24000), stage_id=2)
+        await h.run(AckPlayback(response_id=response_id, played_ms=500))
+        await h.run(CancelResponse())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert h.runner.plugin.has_pending_tool_followup(h.session.runtime_config)
+        assert not h.session.runtime_config.get("qwen_tool_turns_inflight")
+        assert h.session.history_item_ids[f"item_{response_id}"]["content"] == ""
+
+        release.set()
+        await h.runner.ctx.history_calibration.before_prompt()
+        assert h.session.history_item_ids[f"item_{response_id}"]["content"] == heard
+        if trailing_ack:
+            await h.run(AckPlayback(response_id=response_id, played_ms=500))
+
+        # A nonempty stored answer consumes the pair regardless of another ACK.
+        # An accepted empty prefix must leave it available for a retry.
+        assert h.runner.plugin.has_pending_tool_followup(h.session.runtime_config) is (not heard)
+        assert bool(h.session.runtime_config.get("qwen_tool_turns")) is (not heard)
+        assert not h.session.runtime_config.get("qwen_tool_turns_inflight")
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        prompt = h.port.submissions[-1].prompt["prompt"]
+        assert ("get_weather" in prompt) is (not heard)
+        assert ("18C" in prompt) is (not heard)
+        if heard:
+            assert heard in prompt
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_user_turn_before_playback_ack_still_sees_the_tool_pair():
     h = await open_qwen()
     try:

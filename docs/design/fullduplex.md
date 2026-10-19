@@ -623,6 +623,11 @@ never supplies replacement history text or an ASR transcript to insert.
    history.
    Deletion, replacement, stricter truncation and close therefore reject stale
    results even if cancellation of an async callback arrives late.
+5. After an accepted writeback, the controller notifies the runner. If the
+   stored assistant item has nonempty text, the runner settles that response's
+   runtime as committed, just as a playback ACK does. Qwen then consumes its
+   tool pair without requiring another ACK. An empty prefix keeps the pair
+   available for a retry.
 
 ### Evidence lifetime and limits
 

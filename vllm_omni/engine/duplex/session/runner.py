@@ -209,6 +209,7 @@ class DuplexSessionRunner:
                 max_bytes=manager.runtime_config.history_audio_max_bytes_per_session,
                 timeout_s=manager.runtime_config.history_calibration_timeout_ms / 1000,
                 requires_audio=calibration.requires_audio,
+                on_applied=self._settle_calibrated_answer,
             )
         self.model = ModelChannel(
             self.ctx,
@@ -587,6 +588,12 @@ class DuplexSessionRunner:
             await self._on_commit(dict(item.payload))
             return
         logger.warning("Unknown duplex runner internal item: %s", item.kind)
+
+    def _settle_calibrated_answer(self, response_id: str) -> None:
+        """Consume response-owned runtime only after calibration stores text."""
+        message = self.session.history_item_ids.get(f"item_{response_id}")
+        if message is not None and isinstance(content := message.get("content"), str) and content:
+            settle_response_runtime(self.plugin, self.session, committed=True, response_id=response_id)
 
     def _settle_playback_committed_answer(self, events) -> None:
         """Drop a tool pair only when this ACK stored that response's answer."""

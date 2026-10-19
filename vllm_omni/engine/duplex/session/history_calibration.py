@@ -76,6 +76,7 @@ class HistoryCalibration:
         max_bytes: int = 8 * 1024 * 1024,
         timeout_s: float = 1.0,
         requires_audio: bool = True,
+        on_applied: Callable[[str], None] | None = None,
     ) -> None:
         if max_bytes <= 0 or timeout_s <= 0:
             raise ValueError("Calibration limits must be positive")
@@ -84,6 +85,7 @@ class HistoryCalibration:
         self.max_bytes = max_bytes
         self.timeout_s = timeout_s
         self.requires_audio = requires_audio
+        self.on_applied = on_applied
         self.audio: OrderedDict[str, _Audio] = OrderedDict()
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.versions: dict[str, tuple[str, int, int]] = {}
@@ -220,6 +222,8 @@ class HistoryCalibration:
                 )
                 status = "applied" if applied else "stale_or_invalid"
                 retained_chars = char_end if applied else 0
+                if applied and self.on_applied is not None:
+                    self.on_applied(snapshot.response_id)
         except asyncio.CancelledError:
             status = "cancelled"
             raise
