@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from pathlib import Path
@@ -493,13 +494,15 @@ def generate_synthetic_video(
         else video_only_bytes
     )
 
-    temp_cache = tempfile.NamedTemporaryFile(dir=root, prefix=f".{cache_path.name}.", suffix=".tmp", delete=False)
+    temp_cache_path = root / f".{cache_path.name}.{uuid.uuid4().hex}.tmp"
+    # Exclusive creation preserves the normal 0666 & ~umask cache permissions.
+    temp_cache = temp_cache_path.open("xb")
     try:
         with temp_cache:
             temp_cache.write(video_bytes)
-        os.replace(temp_cache.name, cache_path)
+        os.replace(temp_cache_path, cache_path)
     finally:
-        Path(temp_cache.name).unlink(missing_ok=True)
+        temp_cache_path.unlink(missing_ok=True)
 
     return {
         "np_array": np.array(video_frames),

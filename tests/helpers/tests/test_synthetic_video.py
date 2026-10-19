@@ -3,6 +3,8 @@
 
 import base64
 import io
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -100,12 +102,21 @@ def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruptio
         corrupt = b"not an MP4"
     else:
         with av.open(io.BytesIO(raw)) as container:
-            packets = [packet for packet in container.demux(audio=0) if packet.pos is not None and packet.size]
-        packet = packets[len(packets) // 2]
-        corrupt = raw[: packet.pos + packet.size // 2]
-        # +faststart leaves the stream metadata readable despite missing data.
+            packets = [
+                (packet.stream.type, packet.pos, packet.size)
+                for packet in container.demux()
+                if packet.pos is not None and packet.size
+            ]
+        video_end = max(pos + size for kind, pos, size in packets if kind == "video")
+        audio_tail = next(pos for kind, pos, _ in packets if kind == "audio" and pos >= video_end)
+        corrupt = raw[:audio_tail]
+        # Keep every video packet and truncate at an audio packet boundary:
+        # neither video completeness nor a decode exception can reject this.
+        assert len(media._np_array_from_mp4_bytes(corrupt)) == 6
         with av.open(io.BytesIO(corrupt)) as container:
-            assert container.streams.audio
+            stream = container.streams.audio[0]
+            samples = sum(frame.samples for frame in container.decode(audio=0))
+            assert 0 < samples < stream.duration * stream.time_base * stream.codec_context.sample_rate
     cache_path.write_bytes(corrupt)
 
     repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
@@ -158,3 +169,15 @@ def test_failed_cache_publication_preserves_old_file(mocker, synthetic_audio, tm
 
     assert cache_path.read_bytes() == old_bytes
     assert list(tmp_path.iterdir()) == [cache_path]
+
+
+@pytest.mark.parametrize("creation_umask", [0o022, 0o002, 0o077])
+def test_video_cache_respects_creation_permissions(synthetic_audio, tmp_path, creation_umask):
+    previous_umask = os.umask(creation_umask)
+    try:
+        result = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+    finally:
+        os.umask(previous_umask)
+
+    cache_path = Path(result["file_path"])
+    assert stat.S_IMODE(cache_path.stat().st_mode) == 0o666 & ~creation_umask
