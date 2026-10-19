@@ -19,6 +19,7 @@ from vllm_omni.engine.duplex.config import (
     DuplexTurnEventType,
     DuplexTurnState,
     ResponseCreateOptions,
+    resolve_tool_result_timeout_s,
 )
 from vllm_omni.engine.duplex.contracts import DuplexFence
 from vllm_omni.engine.duplex.events import TurnEvent
@@ -740,6 +741,31 @@ def test_from_realtime_ignores_client_chosen_session_ids():
     assert session.as_public_dict()["id"] == "duplex-engine-allocated"
 
 
+def test_from_realtime_reads_and_validates_the_tool_result_timeout():
+    config = DuplexSessionConfig.from_realtime({"tool_result_timeout_s": 2.5})
+    assert resolve_tool_result_timeout_s(config.extra_body) == 2.5
+    assert config.extra_body["tool_result_timeout_s"] == 2.5
+
+    nested = DuplexSessionConfig.from_realtime({"extra_body": {"tool_result_timeout_s": 4}})
+    assert resolve_tool_result_timeout_s(nested.extra_body) == 4.0
+
+    # The deadline only ever makes a pending call unanswerable, so a typo must
+    # be rejected rather than silently reinterpreted (``True`` is an ``int``).
+    for bad in (True, 0, -1.0, float("nan"), float("inf"), 10**400, "5"):
+        with pytest.raises(DuplexConfigError) as excinfo:
+            DuplexSessionConfig.from_realtime({"tool_result_timeout_s": bad})
+        assert excinfo.value.code == "invalid_tool_result_timeout"
+        assert excinfo.value.param == "tool_result_timeout_s"
+
+    with pytest.raises(DuplexConfigError) as excinfo:
+        DuplexSessionConfig(extra_body={"tool_result_timeout_s": False})
+    assert excinfo.value.code == "invalid_tool_result_timeout"
+
+    # Absent (or null) disables the deadline: the default is unchanged.
+    assert resolve_tool_result_timeout_s(DuplexSessionConfig.from_realtime({}).extra_body) is None
+    assert resolve_tool_result_timeout_s({"tool_result_timeout_s": None}) is None
+
+
 # ---- DuplexSessionConfig.apply_realtime_update ----
 
 
@@ -772,6 +798,56 @@ def test_apply_realtime_update_rejects_ref_audio_change():
 
     assert excinfo.value.code == "ref_audio_update_unsupported"
     assert config.ref_audio is None
+
+
+def test_apply_realtime_update_rejects_tool_result_timeout_change():
+    config = DuplexSessionConfig(model="served-model", extra_body={"tool_result_timeout_s": 5.0})
+
+    for patch in ({"tool_result_timeout_s": 1.0}, {"extra_body": {"tool_result_timeout_s": 1.0}}):
+        with pytest.raises(DuplexConfigError) as excinfo:
+            config.apply_realtime_update(patch, session_id="sid")
+        assert excinfo.value.code == "tool_result_timeout_update_unsupported"
+        assert excinfo.value.param == "tool_result_timeout_s"
+
+    assert resolve_tool_result_timeout_s(config.extra_body) == 5.0
+
+
+def test_apply_realtime_update_keeps_an_unchanged_tool_result_timeout():
+    config = DuplexSessionConfig(model="served-model", extra_body={"tool_result_timeout_s": 5.0})
+
+    config.apply_realtime_update({"instructions": "still here", "tool_result_timeout_s": 5}, session_id="sid")
+    config.apply_realtime_update({"extra_body": {"tool_result_timeout_s": 5.0}}, session_id="sid")
+
+    assert config.instructions == "still here"
+    assert resolve_tool_result_timeout_s(config.extra_body) == 5.0
+
+    unset = DuplexSessionConfig(model="served-model")
+    unset.apply_realtime_update({"tool_result_timeout_s": None}, session_id="sid")
+    assert resolve_tool_result_timeout_s(unset.extra_body) is None
+    with pytest.raises(DuplexConfigError) as excinfo:
+        unset.apply_realtime_update({"extra_body": {"tool_result_timeout_s": 1.0}}, session_id="sid")
+    assert excinfo.value.code == "tool_result_timeout_update_unsupported"
+    with pytest.raises(DuplexConfigError) as excinfo:
+        config.apply_realtime_update({"tool_result_timeout_s": None}, session_id="sid")
+    assert excinfo.value.code == "tool_result_timeout_update_unsupported"
+    assert resolve_tool_result_timeout_s(config.extra_body) == 5.0
+
+    opened = DuplexSessionConfig.from_realtime(
+        {"model": "served-model", "tool_result_timeout_s": 5, "extra_body": {"tool_result_timeout_s": 10}}
+    )
+    assert resolve_tool_result_timeout_s(opened.extra_body) == 5.0
+    opened.apply_realtime_update(
+        {"tool_result_timeout_s": 5, "extra_body": {"tool_result_timeout_s": 10}},
+        session_id="sid",
+    )
+    assert resolve_tool_result_timeout_s(opened.extra_body) == 5.0
+    with pytest.raises(DuplexConfigError) as excinfo:
+        opened.apply_realtime_update(
+            {"tool_result_timeout_s": 1, "extra_body": {"tool_result_timeout_s": 5}},
+            session_id="sid",
+        )
+    assert excinfo.value.code == "tool_result_timeout_update_unsupported"
+    assert resolve_tool_result_timeout_s(opened.extra_body) == 5.0
 
 
 def test_apply_realtime_update_patches_fields_and_realtime_keys():

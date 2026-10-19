@@ -673,6 +673,12 @@ class DuplexSessionRuntimeConfig:
     max_pending_output_bytes_per_session: int = 2 * 1024 * 1024
     max_pending_output_events_per_session: int = 512
     max_sessions: int = 1
+    # Total function-call records one session may track until it closes --
+    # pending calls and terminal tombstones together. At the limit, new calls
+    # are refused without closing the session or evicting records. Keeping
+    # terminal tombstones prevents a late ``function_call_output`` from binding
+    # to a newer call that reuses its call_id.
+    max_tool_calls_per_session: int = 4096
     replica_policy: Literal["legacy", "least_sessions"] = "legacy"
     max_sessions_per_replica: int | None = None
     replica_groups: list[dict[int, int]] | None = None
@@ -734,6 +740,7 @@ class DuplexSessionRuntimeConfig:
             "max_pending_output_bytes_per_session": self.max_pending_output_bytes_per_session,
             "max_pending_output_events_per_session": self.max_pending_output_events_per_session,
             "max_sessions": self.max_sessions,
+            "max_tool_calls_per_session": self.max_tool_calls_per_session,
             "completed_append_cache_size": self.completed_append_cache_size,
             "history_calibration_timeout_ms": self.history_calibration_timeout_ms,
             "history_audio_max_bytes_per_session": self.history_audio_max_bytes_per_session,
@@ -772,6 +779,14 @@ class DuplexSessionRuntimeConfig:
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"duplex_session.{name} must be positive")
+        # A record budget is a count, not a measurement. ``True <= 0`` is False
+        # and ``0.5 <= 0`` is False, so the positive check alone would let a
+        # bool become a limit of one and a fraction become a silently truncated
+        # one; ``nan`` would pass it too. Rejecting the shape here keeps the
+        # ledger's ``int(max_calls)`` from inventing a budget nobody configured.
+        budget = self.max_tool_calls_per_session
+        if isinstance(budget, bool) or not isinstance(budget, int):
+            raise ValueError("duplex_session.max_tool_calls_per_session must be an integer")
 
     @property
     def worker_max_sessions(self) -> int:
@@ -821,6 +836,7 @@ class DeployConfig:
     data_parallel_size: int | None = None
     pipeline_parallel_size: int | None = None
     custom_voice_dir: str | None = None
+    weight_transfer_config: dict[str, Any] | None = None
 
 
 _STAGE_RESERVED_KEYS = frozenset(
@@ -854,6 +870,7 @@ PIPELINE_WIDE_ENGINE_FIELDS: tuple[str, ...] = (
     "pipeline_parallel_size",
     "active_stream_window",
     "custom_voice_dir",
+    "weight_transfer_config",
 )
 
 
