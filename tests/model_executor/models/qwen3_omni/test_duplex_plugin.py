@@ -416,6 +416,62 @@ async def test_voice_update_after_audio_output_is_rejected_and_keeps_the_speaker
         await h.manager.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_round_trip_voice_update_after_playback_is_a_no_op():
+    """Realtime clients resend the whole session object, voice field included.
+
+    A voice-less session echoes ``"voice": null``, so after playback every
+    later update — temperature, turn detection — must still go through
+    instead of being rejected as a voice change. The next turn keeps the
+    Talker default (no speaker field).
+    """
+    h = await open_qwen()
+    try:
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        request_id = h.port.submissions[-1].context.request_id
+        response_id = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request_id, finished=True), stage_id=2)
+        await h.run(AckPlayback(response_id=response_id, played_ms=1000))
+        assert h.session.playback.sent_ms > 0
+
+        events = await h.run(UpdateSession(patch={"voice": None, "temperature": 0.5}))
+        assert not any(e.to_realtime().get("type") == "error" for e in events)
+        assert h.session.config.voice is None
+        assert h.session.config.temperature == 0.5
+
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        assert "additional_information" not in h.port.submissions[-1].prompt
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resending_the_current_voice_after_playback_is_a_no_op():
+    h = await open_qwen(voice="chelsie")
+    try:
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        request_id = h.port.submissions[-1].context.request_id
+        response_id = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request_id, finished=True), stage_id=2)
+        await h.run(AckPlayback(response_id=response_id, played_ms=1000))
+        assert h.session.playback.sent_ms > 0
+
+        # Same voice, different spelling: an echo, not a change.
+        events = await h.run(UpdateSession(patch={"voice": " Chelsie "}))
+        assert not any(e.to_realtime().get("type") == "error" for e in events)
+        assert h.session.config.voice.strip().lower() == "chelsie"
+
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        prompt = h.port.submissions[-1].prompt
+        assert prompt["additional_information"]["speaker"] == ["chelsie"]
+    finally:
+        await h.manager.shutdown()
+
+
 def test_supported_speakers_come_from_the_talker_config():
     plugin = Qwen3OmniDuplexPlugin(lambda *args: None)
     model_config = SimpleNamespace(

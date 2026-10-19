@@ -554,7 +554,9 @@ class DuplexSessionConfig:
         voice = payload.get("voice")
         # An explicit ``voice`` — string or null, at the top level or nested in
         # ``audio.output`` — requests a voice change. Clearing matters as much as
-        # setting once downstream stages key behavior off the voice.
+        # setting once downstream stages key behavior off the voice. Realtime
+        # clients resend the whole session object, so an echo of the current
+        # value is not a change.
         voice_requested = "voice" in payload
         if not isinstance(voice, str) and isinstance(audio_output, dict) and "voice" in audio_output:
             voice = audio_output["voice"]
@@ -567,10 +569,13 @@ class DuplexSessionConfig:
         if isinstance(model, str) and self.model is None:
             self.model = model
         if voice_requested and audio_started:
-            raise DuplexConfigError(
-                "session.update cannot change voice after audio output has started",
-                code="voice_update_after_audio_unsupported",
-            )
+            requested = None if voice is None else str(voice).strip().lower()
+            current = None if self.voice is None else str(self.voice).strip().lower()
+            if requested != current:
+                raise DuplexConfigError(
+                    "session.update cannot change voice after audio output has started",
+                    code="voice_update_after_audio_unsupported",
+                )
         if isinstance(payload.get("ref_audio"), str):
             raise DuplexConfigError(
                 "session.update cannot change ref_audio after the session is open", code="ref_audio_update_unsupported"
@@ -581,7 +586,9 @@ class DuplexSessionConfig:
             self.instructions = None
         if isinstance(voice, str):
             self.voice = str(voice)
-        elif "voice" in payload and payload.get("voice") is None:
+        elif voice_requested and voice is None:
+            # Includes a nested audio.output.voice null, which the guard above
+            # already counts as a change request.
             self.voice = None
         response_format = payload.get("output_audio_format") or payload.get("response_format")
         if response_format is None and isinstance(audio_output, dict):

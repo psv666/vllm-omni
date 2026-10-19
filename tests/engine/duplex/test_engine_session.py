@@ -784,17 +784,31 @@ def test_apply_realtime_update_rejects_voice_change_after_audio_started():
 
     config.apply_realtime_update({"voice": "verse"}, audio_started=False)
     assert config.voice == "verse"
-    # A change request is a change request whether it sets or clears: an
-    # explicit ``voice: null`` must not slip past the guard to silently fall
-    # back to a default speaker mid-session.
-    for patch in ({"voice": "alloy"}, {"voice": None}, {"audio": {"output": {"voice": "alloy"}}}):
+    # Only a real change is a change: realtime clients resend the whole
+    # session object, so a round-tripped voice (same value, any case or
+    # spacing) and a null matching a voice-less config must pass the guard.
+    config.apply_realtime_update({"voice": "verse"}, audio_started=True)
+    config.apply_realtime_update({"voice": " VERSE "}, audio_started=True)
+    assert config.voice.strip().lower() == "verse"
+    config.apply_realtime_update({"voice": None}, audio_started=False)
+    assert config.voice is None
+    config.apply_realtime_update({"voice": None}, audio_started=True)
+    assert config.voice is None
+    for patch in ({"voice": "alloy"}, {"audio": {"output": {"voice": "alloy"}}}):
         with pytest.raises(DuplexConfigError) as excinfo:
             config.apply_realtime_update(patch, audio_started=True)
         assert excinfo.value.code == "voice_update_after_audio_unsupported"
-        assert config.voice == "verse"
-    # Before any audio output, clearing stays a legal no-voice request.
-    config.apply_realtime_update({"voice": None}, audio_started=False)
+        assert config.voice is None
+
+    # A nested null is a clear request: honored before audio output (GA
+    # clients carry the voice under audio.output), rejected after.
+    config = DuplexSessionConfig(model="m", voice="alloy")
+    config.apply_realtime_update({"audio": {"output": {"voice": None}}}, audio_started=False)
     assert config.voice is None
+    config = DuplexSessionConfig(model="m", voice="alloy")
+    with pytest.raises(DuplexConfigError) as excinfo:
+        config.apply_realtime_update({"audio": {"output": {"voice": None}}}, audio_started=True)
+    assert excinfo.value.code == "voice_update_after_audio_unsupported"
 
 
 def test_apply_realtime_update_rejects_ref_audio_change():
