@@ -552,8 +552,13 @@ class DuplexSessionConfig:
         audio_input = audio_config.get("input") if isinstance(audio_config, dict) else None
         audio_output = audio_config.get("output") if isinstance(audio_config, dict) else None
         voice = payload.get("voice")
-        if not isinstance(voice, str) and isinstance(audio_output, dict):
-            voice = audio_output.get("voice")
+        # An explicit ``voice`` — string or null, at the top level or nested in
+        # ``audio.output`` — requests a voice change. Clearing matters as much as
+        # setting once downstream stages key behavior off the voice.
+        voice_requested = "voice" in payload
+        if not isinstance(voice, str) and isinstance(audio_output, dict) and "voice" in audio_output:
+            voice = audio_output["voice"]
+            voice_requested = True
         if isinstance(model, str) and self.model is not None and model != self.model:
             raise DuplexConfigError(
                 "session.update cannot change model for an open realtime duplex session",
@@ -561,7 +566,7 @@ class DuplexSessionConfig:
             )
         if isinstance(model, str) and self.model is None:
             self.model = model
-        if isinstance(voice, str) and audio_started:
+        if voice_requested and audio_started:
             raise DuplexConfigError(
                 "session.update cannot change voice after audio output has started",
                 code="voice_update_after_audio_unsupported",

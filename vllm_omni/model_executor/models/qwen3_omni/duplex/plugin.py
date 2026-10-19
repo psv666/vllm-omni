@@ -1217,10 +1217,12 @@ class Qwen3OmniDuplexPlugin(DuplexModelPlugin):
                 prompt_payload["_qwen_newly_expired_call_ids"] = expired_anchors
         # The Talker picks the checkpoint speaker token from this field; the
         # chat-completions path sets it in serving_chat, so the duplex plan
-        # must forward the session voice the same way (#8815).
+        # must forward the session voice the same way (#8815). runtime_config
+        # already carries the normalized voice; setdefault keeps any other
+        # additional_information keys this plan may carry.
         voice = runtime_config.get("voice")
         if isinstance(voice, str) and voice.strip():
-            prompt_payload["additional_information"] = {"speaker": [voice.lower().strip()]}
+            prompt_payload.setdefault("additional_information", {})["speaker"] = [voice]
         return DuplexAppendPlan(prompt=prompt_payload)
 
     def decide_output(self, **kwargs):

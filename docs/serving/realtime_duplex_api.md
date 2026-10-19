@@ -41,6 +41,20 @@ Grouping and pruning affect only the model-input view. They do not merge or
 delete the source conversation items exposed to clients, and do not change
 playback acknowledgement or interruption handling.
 
+### Qwen3-Omni voice selection
+
+The duplex session forwards the configured voice to the Talker as the
+checkpoint speaker. Accepted values are the names in the checkpoint's
+`talker_config.speaker_id` mapping (for example `chelsie`, `ethan`,
+`aiden`), matched case-insensitively. The voice can be set when the session
+is opened and changed through `session.update` until audio output has
+started; an unknown name is rejected with error code `invalid_speaker`,
+leaving the previous voice in effect. Once audio output has started, any
+`session.update` that sets or clears `voice` is rejected with
+`voice_update_after_audio_unsupported`. Clearing the voice before any audio
+output is allowed and makes the Talker fall back to the checkpoint's default
+speaker. Reference-voice audio (`ref_audio`) is not supported on this model.
+
 ### Optional history calibration for interrupted Qwen3-Omni replies
 
 By default, Qwen3-Omni audio replies under `ack_only` retain their full text

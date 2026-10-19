@@ -308,7 +308,9 @@ async def test_session_voice_is_forwarded_to_the_talker_speaker_field():
     The chat-completions path puts the requested voice into
     ``prompt["additional_information"]["speaker"]`` and the thinker→talker
     stage processor forwards it; the duplex plan is the only other prompt
-    producer, so it must set the same field (#8815).
+    producer, so it must set the same field (#8815). Re-targeting is only
+    legal while no audio output has started; the harness never plays audio,
+    which is exactly the pre-audio window these assertions cover.
     """
     h = await open_qwen()
     try:
@@ -318,7 +320,7 @@ async def test_session_voice_is_forwarded_to_the_talker_speaker_field():
         prompt = h.port.submissions[-1].prompt
         assert prompt["additional_information"]["speaker"] == ["chelsie"]
 
-        # A later session.update re-targets every subsequent turn.
+        # Still before any audio output: re-targeting the following turns is legal.
         await h.run(UpdateSession(patch={"voice": "Ethan"}))
         await h.run(append_audio())
         await h.run(Commit(final=True, create_response=True))
@@ -370,10 +372,46 @@ async def test_clearing_session_voice_drops_the_speaker_field():
         await h.run(Commit(final=True, create_response=True))
         assert h.port.submissions[-1].prompt["additional_information"]["speaker"] == ["chelsie"]
 
+        # Clearing is a voice change like any other; before audio output it is
+        # legal and simply falls back to the Talker default. After playback the
+        # guard rejects it — see the companion test below.
         await h.run(UpdateSession(patch={"voice": None}))
         await h.run(append_audio())
         await h.run(Commit(final=True, create_response=True))
         assert "additional_information" not in h.port.submissions[-1].prompt
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_update_after_audio_output_is_rejected_and_keeps_the_speaker():
+    """Once audio has played, setting or clearing the voice must be rejected.
+
+    The harness passes updates with ``audio_started=False`` elsewhere; this
+    test plays and acknowledges an answer first, so the config guard is on
+    the production path and the session keeps its original speaker.
+    """
+    h = await open_qwen(voice="chelsie")
+    try:
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        request_id = h.port.submissions[-1].context.request_id
+        response_id = h.session.active_response_id
+        await h.deliver_and_settle(tts_output(request_id, finished=True), stage_id=2)
+        await h.run(AckPlayback(response_id=response_id, played_ms=1000))
+        assert h.session.playback.sent_ms > 0
+
+        for patch in ({"voice": "Ethan"}, {"voice": None}):
+            events = await h.run(UpdateSession(patch=patch))
+            errors = [e.to_realtime() for e in events if e.to_realtime().get("type") == "error"]
+            assert errors, events
+            assert "voice" in str(errors[0])
+        assert h.session.config.voice == "chelsie"
+
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        prompt = h.port.submissions[-1].prompt
+        assert prompt["additional_information"]["speaker"] == ["chelsie"]
     finally:
         await h.manager.shutdown()
 
