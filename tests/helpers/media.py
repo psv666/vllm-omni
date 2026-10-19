@@ -308,16 +308,12 @@ def _mux_mp4_bytes_with_synthetic_audio(
     duration_sec = num_frames / fps if fps > 0 else 0.0
     duration_int = max(1, int(math.ceil(duration_sec)))
 
-    try:
-        audio_result = generate_synthetic_audio(
-            duration=duration_int,
-            num_channels=1,
-            sample_rate=sample_rate,
-        )
-        audio_pcm = audio_result["np_array"]
-    except Exception as e:
-        logger.warning("Synthetic video: generate_synthetic_audio failed (%s); using video-only MP4.", e)
-        return video_mp4_bytes
+    audio_result = generate_synthetic_audio(
+        duration=duration_int,
+        num_channels=1,
+        sample_rate=sample_rate,
+    )
+    audio_pcm = audio_result["np_array"]
 
     try:
         import imageio_ffmpeg
@@ -326,47 +322,38 @@ def _mux_mp4_bytes_with_synthetic_audio(
     except Exception:
         ffmpeg_exe = "ffmpeg"
 
-    try:
-        with tempfile.TemporaryDirectory(prefix="syn_vid_mux_") as tmp:
-            vid_path = os.path.join(tmp, "video.mp4")
-            wav_path = os.path.join(tmp, "audio.wav")
-            out_path = os.path.join(tmp, "out.mp4")
-            with open(vid_path, "wb") as f:
-                f.write(video_mp4_bytes)
-            sf.write(wav_path, audio_pcm, sample_rate, format="WAV", subtype="PCM_16")
-            cmd = [
-                ffmpeg_exe,
-                "-y",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                vid_path,
-                "-i",
-                wav_path,
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-shortest",
-                "-movflags",
-                "+faststart",
-                out_path,
-            ]
-            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, timeout=300)
-            with open(out_path, "rb") as f:
-                return f.read()
-    except (
-        FileNotFoundError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ) as e:
-        logger.warning("Synthetic video: audio mux failed (%s); using video-only MP4.", e)
-        return video_mp4_bytes
+    with tempfile.TemporaryDirectory(prefix="syn_vid_mux_") as tmp:
+        vid_path = os.path.join(tmp, "video.mp4")
+        wav_path = os.path.join(tmp, "audio.wav")
+        out_path = os.path.join(tmp, "out.mp4")
+        with open(vid_path, "wb") as f:
+            f.write(video_mp4_bytes)
+        sf.write(wav_path, audio_pcm, sample_rate, format="WAV", subtype="PCM_16")
+        cmd = [
+            ffmpeg_exe,
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            vid_path,
+            "-i",
+            wav_path,
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            out_path,
+        ]
+        subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, timeout=300)
+        with open(out_path, "rb") as f:
+            return f.read()
 
 
 def generate_synthetic_video(
@@ -383,6 +370,9 @@ def generate_synthetic_video(
     ``width`` / ``height`` / ``num_frames`` / ``embed_audio`` unless
     ``force_regenerate`` is true. Cache root: ``cache_dir`` if given, else the
     default temp subdirectory.
+
+    ``embed_audio=True`` requires successful TTS generation and FFmpeg muxing.
+    Cached MP4s without the requested audio stream are regenerated.
     """
     root = _resolve_synthetic_media_cache_dir(cache_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -390,11 +380,19 @@ def generate_synthetic_video(
 
     if not force_regenerate and cache_path.is_file():
         video_bytes = cache_path.read_bytes()
-        return {
-            "np_array": _np_array_from_mp4_bytes(video_bytes),
-            "base64": base64.b64encode(video_bytes).decode("utf-8"),
-            "file_path": str(cache_path.resolve()),
-        }
+        has_required_audio = True
+        if embed_audio:
+            import av
+
+            with av.open(io.BytesIO(video_bytes)) as container:
+                has_required_audio = bool(container.streams.audio)
+        if has_required_audio:
+            return {
+                "np_array": _np_array_from_mp4_bytes(video_bytes),
+                "base64": base64.b64encode(video_bytes).decode("utf-8"),
+                "file_path": str(cache_path.resolve()),
+            }
+        logger.warning("Cached synthetic video %s has no audio stream; regenerating.", cache_path)
 
     import cv2
     import imageio
