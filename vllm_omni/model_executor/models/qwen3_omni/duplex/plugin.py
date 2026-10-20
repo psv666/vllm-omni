@@ -26,14 +26,14 @@ from vllm.sampling_params import RequestOutputKind
 from vllm_omni.engine.duplex.config import DuplexCapabilities, DuplexSessionConfig
 from vllm_omni.engine.duplex.contracts import DuplexAppendPlan, duplex_resource_request_belongs_to_session
 from vllm_omni.engine.duplex.plugin import DuplexDataPlane, DuplexModelPlugin, DuplexRuntimeConfigError
-from vllm_omni.entrypoints.openai.utils import (
-    get_supported_speakers_from_hf_config,
-    validate_requested_speaker,
-)
 from vllm_omni.model_executor.models.qwen3_omni.duplex.session import QwenDuplexSessionState
 from vllm_omni.model_executor.models.qwen3_omni.duplex.tools_utils import (
     ThinkerToolCursor,
     chat_template_tools,
+)
+from vllm_omni.utils.speakers import (
+    get_supported_speakers_from_hf_config,
+    validate_requested_speaker,
 )
 
 logger = init_logger(__name__)
@@ -453,13 +453,10 @@ class Qwen3OmniDuplexPlugin(DuplexModelPlugin):
         if config.ref_audio:
             raise DuplexRuntimeConfigError("Qwen duplex does not support reference voice audio")
         voice = config.voice
-        if isinstance(voice, str) and voice.strip():
-            try:
-                voice = validate_requested_speaker(voice, self._supported_speakers or set())
-            except ValueError as exc:
-                raise DuplexRuntimeConfigError(str(exc), code="invalid_speaker") from exc
-        else:
-            voice = None
+        try:
+            voice = validate_requested_speaker(voice, self._supported_speakers or set())
+        except ValueError as exc:
+            raise DuplexRuntimeConfigError(str(exc), code="invalid_speaker") from exc
         updated: dict[str, object] = {
             "instructions": config.instructions,
             "initial_user_text": config.initial_user_text,
