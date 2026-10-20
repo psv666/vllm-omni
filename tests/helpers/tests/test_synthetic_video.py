@@ -146,15 +146,28 @@ def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruptio
 
 
 @pytest.mark.parametrize("embed_audio", [False, True], ids=["video-only", "with-audio"])
-def test_truncated_video_cache_is_regenerated(synthetic_audio, tmp_path, embed_audio):
+def test_incomplete_video_cache_is_regenerated(synthetic_audio, tmp_path, embed_audio):
     result = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
     cache_path = Path(result["file_path"])
-    raw = cache_path.read_bytes()
-    with av.open(io.BytesIO(raw)) as container:
-        last_video = max(packet.pos for packet in container.demux(video=0) if packet.pos is not None and packet.size)
-    corrupt = raw[:last_video]
-    # The video still opens, so the frame-count check must reject video-only caches.
+    if embed_audio:
+        # Keep a complete audio stream while violating the six-frame cache key.
+        shorter = media.generate_synthetic_video(64, 64, 5, embed_audio=True, cache_dir=tmp_path)
+        corrupt = base64.b64decode(shorter["base64"])
+    else:
+        raw = cache_path.read_bytes()
+        with av.open(io.BytesIO(raw)) as container:
+            last_video = max(
+                packet.pos for packet in container.demux(video=0) if packet.pos is not None and packet.size
+            )
+        corrupt = raw[:last_video]
+    # Both modes must reach frame-count validation rather than a decode failure.
     assert 0 < len(media._np_array_from_mp4_bytes(corrupt)) < 6
+    if embed_audio:
+        with av.open(io.BytesIO(corrupt)) as container:
+            stream = container.streams.audio[0]
+            samples = sum(frame.samples for frame in container.decode(audio=0))
+            assert samples > 0
+            assert samples >= stream.duration * stream.time_base * stream.codec_context.sample_rate
     cache_path.write_bytes(corrupt)
 
     repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
