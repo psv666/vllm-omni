@@ -822,6 +822,25 @@ def test_apply_realtime_update_rejects_voice_change_after_audio_started():
     assert excinfo.value.code == "voice_update_after_audio_unsupported"
 
 
+def test_apply_realtime_update_treats_blank_and_null_as_the_same_voice():
+    # A blank value and null both mean "no voice": switching between them
+    # after playback is an echo, not a change, so it must not be rejected.
+    config = DuplexSessionConfig(model="m", voice="")
+    config.apply_realtime_update({"voice": None}, audio_started=True)
+    assert config.voice is None
+
+    config = DuplexSessionConfig(model="m")
+    config.apply_realtime_update({"voice": "   "}, audio_started=True)
+    assert config.voice is None
+
+    # Clearing a set voice with a blank value is still a real change.
+    config = DuplexSessionConfig(model="m", voice="verse")
+    with pytest.raises(DuplexConfigError) as excinfo:
+        config.apply_realtime_update({"voice": "   "}, audio_started=True)
+    assert excinfo.value.code == "voice_update_after_audio_unsupported"
+    assert config.voice == "verse"
+
+
 def test_apply_realtime_update_rejects_ref_audio_change():
     config = DuplexSessionConfig(model="m")
 

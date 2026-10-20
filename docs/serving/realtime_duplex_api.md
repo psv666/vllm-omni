@@ -46,14 +46,18 @@ playback acknowledgement or interruption handling.
 The duplex session forwards the configured voice to the Talker as the
 checkpoint speaker. Accepted values are the names in the checkpoint's
 `talker_config.speaker_id` mapping (for example `chelsie`, `ethan`,
-`aiden`), matched case-insensitively. The voice can be set when the session
-is opened and changed through `session.update` until audio output has
-started; an unknown name is rejected with error code `invalid_speaker`,
-leaving the previous voice in effect. Once audio output has started, any
-`session.update` that sets or clears `voice` is rejected with
-`voice_update_after_audio_unsupported`. Clearing the voice before any audio
-output is allowed and makes the Talker fall back to the checkpoint's default
-speaker. Reference-voice audio (`ref_audio`) is not supported on this model.
+`aiden`), matched case-insensitively. When the checkpoint exposes that
+mapping, an unknown name is rejected with error code `invalid_speaker`,
+leaving the previous voice in effect; a checkpoint without a mapping leaves
+voice names unvalidated and the Talker uses its default. The voice can be set
+when the session is opened and changed through `session.update` until audio
+output has started. Once audio output has started, a change to `voice` is
+rejected with `voice_update_after_audio_unsupported`; resending the current
+value — in any case or spacing, or as an echoing `null` — is a no-op, so
+clients may round-trip the whole session object. Clearing the voice before
+any audio output is allowed and makes the Talker fall back to the checkpoint's
+default speaker; a blank value is treated the same as `null`. Reference-voice
+audio (`ref_audio`) is not supported on this model.
 
 ### Optional history calibration for interrupted Qwen3-Omni replies
 

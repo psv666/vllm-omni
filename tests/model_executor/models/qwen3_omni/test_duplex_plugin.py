@@ -343,6 +343,20 @@ async def test_open_session_voice_is_forwarded_to_the_talker_speaker_field():
 
 
 @pytest.mark.asyncio
+async def test_nested_session_voice_is_forwarded_to_the_talker_speaker_field():
+    """GA-shaped clients carry the voice under ``audio.output.voice``."""
+    h = await open_qwen()
+    try:
+        await h.run(UpdateSession(patch={"audio": {"output": {"voice": " Chelsie "}}}))
+        await h.run(append_audio())
+        await h.run(Commit(final=True, create_response=True))
+        prompt = h.port.submissions[-1].prompt
+        assert prompt["additional_information"]["speaker"] == ["chelsie"]
+    finally:
+        await h.manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_unsupported_session_voice_is_rejected_and_keeps_the_previous_one():
     h = await open_qwen(voice="chelsie")
     h.manager.plugin._supported_speakers = {"chelsie", "ethan"}
@@ -501,6 +515,29 @@ def test_runtime_config_voice_validation_rejects_unknown_names():
     with pytest.raises(DuplexRuntimeConfigError, match="Invalid speaker 'Nova'") as exc_info:
         plugin.runtime_config_for_update(DuplexSessionConfig(voice="Nova"), {})
     assert exc_info.value.code == "invalid_speaker"
+
+
+@pytest.mark.asyncio
+async def test_prepare_runtime_config_rejects_an_unknown_voice_at_open():
+    """The open path loads the checkpoint speakers and validates the session voice."""
+    plugin = Qwen3OmniDuplexPlugin(lambda *args: None)
+    # ``prepare_runtime_config`` only loads a processor when this is unset.
+    plugin.processor = SimpleNamespace()
+    model_config = SimpleNamespace(
+        hf_config=SimpleNamespace(talker_config=SimpleNamespace(speaker_id={"Chelsie": 1})),
+        model="qwen",
+        trust_remote_code=True,
+    )
+
+    with pytest.raises(DuplexRuntimeConfigError, match="Invalid speaker 'nova'") as exc_info:
+        await plugin.prepare_runtime_config(DuplexSessionConfig(model="qwen", voice="nova"), model_config=model_config)
+    assert exc_info.value.code == "invalid_speaker"
+    assert plugin._supported_speakers == {"chelsie"}
+
+    runtime_config = await plugin.prepare_runtime_config(
+        DuplexSessionConfig(model="qwen", voice=" CHELSIE "), model_config=model_config
+    )
+    assert runtime_config["voice"] == "chelsie"
 
 
 @pytest.mark.asyncio

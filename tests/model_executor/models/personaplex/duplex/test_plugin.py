@@ -293,6 +293,20 @@ def test_runtime_config_update_rejects_changed_voice() -> None:
     assert unchanged["personaplex_voice_prompt"] == "NATF2.pt"
 
 
+def test_runtime_config_update_accepts_an_echoed_voice_spelling() -> None:
+    """A whole-session resend may change case or spacing; the stored voice must survive."""
+    plugin = _plugin()
+    current = {"personaplex_persona": DEFAULT_PERSONA, "personaplex_voice_prompt": "NATF2.pt"}
+
+    for voice in ("natf2.pt", " NATF2.pt "):
+        config = DuplexSessionConfig(voice="NATF2.pt")
+        config.apply_realtime_update({"voice": voice, "temperature": 0.5}, audio_started=False)
+        assert config.voice == "NATF2.pt"
+        unchanged = plugin.runtime_config_for_update(config, current)
+        assert unchanged["personaplex_voice_prompt"] == "NATF2.pt"
+        assert config.temperature == 0.5
+
+
 def test_data_plane_context_is_the_framework_default() -> None:
     context = _plugin().data_plane_context(
         epoch=1,

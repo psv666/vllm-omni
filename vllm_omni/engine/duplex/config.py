@@ -18,6 +18,18 @@ from enum import Enum
 from typing import Any, cast
 
 
+def _normalized_voice(value: object) -> str | None:
+    """Return the canonical form used to decide whether a voice update is a change.
+
+    A blank string and ``None`` both mean "no voice"; treating them as
+    different values would reject a client's null clear for a blank voice.
+    """
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
 class DuplexConfigError(ValueError):
     """A Realtime session/response object was rejected while mapping it onto the duplex config."""
 
@@ -574,8 +586,8 @@ class DuplexSessionConfig:
             # the plugin's runtime_config_for_update on every session.update,
             # and exact-comparing plugins must see the stored spelling even
             # before any audio output.
-            requested = None if voice is None else str(voice).strip().lower()
-            current = None if self.voice is None else str(self.voice).strip().lower()
+            requested = _normalized_voice(voice)
+            current = _normalized_voice(self.voice)
             voice_is_echo = requested == current
             if audio_started and not voice_is_echo:
                 raise DuplexConfigError(
