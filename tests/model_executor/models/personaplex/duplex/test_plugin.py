@@ -307,6 +307,25 @@ def test_runtime_config_update_accepts_an_echoed_voice_spelling() -> None:
         assert config.temperature == 0.5
 
 
+def test_runtime_config_update_treats_a_blank_voice_as_a_clear() -> None:
+    """A blank clear must match the equivalent null clear at the plugin boundary."""
+    plugin = _plugin()
+    current = {"personaplex_persona": DEFAULT_PERSONA, "personaplex_voice_prompt": "NATM1.pt"}
+
+    blank = DuplexSessionConfig(voice="NATM1.pt")
+    blank.apply_realtime_update({"voice": "   "}, audio_started=False)
+    assert blank.voice is None
+
+    null = DuplexSessionConfig(voice="NATM1.pt")
+    null.apply_realtime_update({"voice": None}, audio_started=False)
+    assert null.voice is None
+
+    for config in (blank, null):
+        with pytest.raises(DuplexRuntimeConfigError, match="voice") as excinfo:
+            plugin.runtime_config_for_update(config, current)
+        assert excinfo.value.code == "voice_update_unsupported"
+
+
 def test_data_plane_context_is_the_framework_default() -> None:
     context = _plugin().data_plane_context(
         epoch=1,

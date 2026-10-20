@@ -833,6 +833,11 @@ def test_apply_realtime_update_treats_blank_and_null_as_the_same_voice():
     config.apply_realtime_update({"voice": "   "}, audio_started=True)
     assert config.voice is None
 
+    # Before playback a blank clear is stored as null, matching the docs.
+    config = DuplexSessionConfig(model="m", voice="verse")
+    config.apply_realtime_update({"voice": "   "}, audio_started=False)
+    assert config.voice is None
+
     # Clearing a set voice with a blank value is still a real change.
     config = DuplexSessionConfig(model="m", voice="verse")
     with pytest.raises(DuplexConfigError) as excinfo:

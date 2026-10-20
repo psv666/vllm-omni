@@ -605,8 +605,9 @@ class DuplexSessionConfig:
         if isinstance(voice, str) and not voice_is_echo:
             # An echo keeps the stored spelling: this config is shared across
             # plugins, and some (PersonaPlex) compare the stored voice exactly,
-            # so a case or whitespace variant must not overwrite it.
-            self.voice = str(voice)
+            # so a case or whitespace variant must not overwrite it. A blank
+            # value is a clear, the same as an explicit null.
+            self.voice = None if _normalized_voice(voice) is None else str(voice)
         elif voice_requested and voice is None:
             # Includes a nested audio.output.voice null, which the guard above
             # already counts as a change request.
