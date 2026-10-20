@@ -29,28 +29,6 @@ def _samples(audio: str) -> list[float]:
     return [struct.unpack_from("<f", raw, offset)[0] for offset in range(0, len(raw), 4)]
 
 
-class _Reservation:
-    def __init__(self, payload: dict[str, object], operation_id: str) -> None:
-        self.payload = payload
-        self.operation_id = operation_id
-        self.byte_count = 4
-
-    def commit(self) -> None:
-        return None
-
-
-class _Buffer:
-    def __init__(self, payloads: list[dict[str, object]]) -> None:
-        self._payloads = list(payloads)
-        self._index = 0
-
-    def prepare_commit(self, *, operation_id: str, chunk_period_ms: int) -> _Reservation:
-        del chunk_period_ms
-        payload = self._payloads[self._index]
-        self._index += 1
-        return _Reservation(payload, operation_id)
-
-
 class _Model:
     def __init__(self) -> None:
         self.submitted: list[str] = []
@@ -84,12 +62,6 @@ async def test_auto_response_commit_consumes_retained_pcm(
         lambda *args, **kwargs: {"type": "input.committed"},
     )
     state = AuraServingSessionState()
-    state.audio_buffer = _Buffer(
-        [
-            {"format": "pcm_f32le", "sample_rate_hz": 16000, "audio": _pcm([1.0]), "is_speech": True},
-            {"format": "pcm_f32le", "sample_rate_hz": 16000, "audio": _pcm([2.0]), "is_speech": True},
-        ]
-    )
     session = SimpleNamespace(
         turn_id=0,
         epoch=0,
@@ -121,14 +93,20 @@ async def test_auto_response_commit_consumes_retained_pcm(
         )
         return await attempt._submit()
 
-    runner = SimpleNamespace(
-        session=session,
-        model_state=state,
-        emit=lambda payload: None,
-        _start_append=start_append,
-    )
-    for item_id in item_ids:
-        await DuplexSessionRunner._commit_and_start_auto_response(runner, {}, realtime_item_id=item_id)
+    # Keep the real commit helpers bound without starting a session or a stage.
+    runner = DuplexSessionRunner.__new__(DuplexSessionRunner)
+    runner.session = session
+    runner.model_state = state
+    monkeypatch.setattr(runner, "emit", lambda payload: None)
+    monkeypatch.setattr(runner, "_start_append", start_append)
+    for index, item_id in enumerate(item_ids):
+        state.audio_buffer.prepare_append(
+            {"format": "pcm_f32le", "sample_rate_hz": 16000, "audio": _pcm([float(index + 1)]), "is_speech": True},
+            operation_id=f"append-{index}",
+            chunk_period_ms=1000,
+            allow_emit=False,
+        )
+        await runner._commit_and_start_auto_response({}, realtime_item_id=item_id)
 
     assert [_samples(audio) for audio in model.submitted] == [[1.0], [2.0]]
     assert state.committed_audio_payload is None
