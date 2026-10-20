@@ -34,6 +34,22 @@ both stages on vLLM's Triton unquantized MoE path and avoids the unstable FlashI
 some GPUs.
 Asynchronous chunk streaming is **enabled by default** within the bundled configuration.
 
+On B200/B300-class GPUs (SM100/SM103) with cuDNN 9.20.0, Qwen3-Omni
+automatically runs Code2Wav in FP32 when its configured precision resolves to
+BF16 or FP16. This avoids incorrect low-precision convolutions that can make
+streaming audio quiet or distorted at certain decode window lengths
+([#8935](https://github.com/vllm-project/vllm-omni/issues/8935)). The fallback
+also covers the optional first-frame decoder inside the Talker; Thinker and
+Talker generation retain their configured precision. It takes effect before
+weight loading and CUDA Graph capture, and logs a warning at startup.
+
+FP32 increases Code2Wav memory use; latency depends on the selected kernels.
+The fallback is limited to
+cuDNN 9.20.0 on these GPUs; newer cuDNN versions retain the configured precision.
+For releases without this automatic fallback, the default separate Code2Wav
+stage can be run in FP32 with
+`--stage-overrides '{"2": {"dtype": "float32"}}'`.
+
 For Thinker pipeline parallelism, configure `pipeline_parallel_size` and `devices`
 on the Thinker stage. Keep Talker and Code2Wav at `pipeline_parallel_size: 1`. The
 default asynchronous scheduling and audio chunk streaming can remain enabled.

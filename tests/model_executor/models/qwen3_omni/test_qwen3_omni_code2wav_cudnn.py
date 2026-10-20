@@ -6,9 +6,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import Qwen3OmniMoeCode2WavConfig
+from vllm.config import DeviceConfig
+from vllm.platforms.interface import DeviceCapability
+from vllm.utils.torch_utils import set_default_torch_dtype
 
 from tests.helpers.mark import hardware_marks
 from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_code2wav import Qwen3OmniMoeCode2Wav
+from vllm_omni.platforms import current_omni_platform
 
 pytestmark = [
     pytest.mark.core_model,
@@ -17,7 +21,7 @@ pytestmark = [
 ]
 
 
-def _codec(enabled):
+def _codec(enabled, dtype=torch.float32):
     config = Qwen3OmniMoeCode2WavConfig(
         hidden_size=32,
         intermediate_size=64,
@@ -35,11 +39,44 @@ def _codec(enabled):
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
             hf_config=config, stage_connector_config={"extra": {"codec_cudnn_benchmark": enabled}}
-        )
+        ),
+        device_config=DeviceConfig(device="cuda"),
+        quant_config=None,
     )
-    model = Qwen3OmniMoeCode2Wav(vllm_config=vllm_config).cuda().eval()
+    with set_default_torch_dtype(dtype), torch.device("cuda"):
+        model = Qwen3OmniMoeCode2Wav(vllm_config=vllm_config).eval()
     model.precompute_snake_caches()
     return model
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@torch.inference_mode()
+def test_dtype_fallback_matches_float32_with_cuda_graph(mocker, dtype):
+    # Exercise the workaround on CI GPUs too. This checks execution and graph
+    # compatibility, not reproduction of the SM100/SM103 cuDNN numerical bug.
+    mocker.patch.object(torch.backends.cudnn, "version", return_value=92000)
+    mocker.patch.object(current_omni_platform, "get_device_capability", return_value=DeviceCapability(10, 3))
+    torch.manual_seed(8935)
+    reference = _codec(False)
+    checkpoint = [("code2wav." + name, p.to(dtype)) for name, p in reference.named_parameters()]
+    model = _codec(False, dtype)
+    assert model.load_weights(checkpoint) == reference.load_weights(checkpoint)
+    model.precompute_snake_caches()
+    reference.precompute_snake_caches()
+    assert {p.dtype for p in model.parameters()} == {torch.float32}
+
+    for frames in (4, 29, 50):
+        codes = torch.randint(0, 16, (1, 2, frames), device="cuda")
+        for _ in range(3):
+            actual = model(codes)
+        torch.testing.assert_close(actual, reference(codes))
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            captured = model(codes)
+        codes.random_(0, 16)
+        graph.replay()
+        assert captured.dtype == torch.float32
+        torch.testing.assert_close(captured, reference(codes))
 
 
 def _flags():
