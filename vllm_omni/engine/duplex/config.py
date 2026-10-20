@@ -569,11 +569,15 @@ class DuplexSessionConfig:
         if isinstance(model, str) and self.model is None:
             self.model = model
         voice_is_echo = False
-        if voice_requested and audio_started:
+        if voice_requested:
+            # The echo check is playback-independent: SessionControl re-runs
+            # the plugin's runtime_config_for_update on every session.update,
+            # and exact-comparing plugins must see the stored spelling even
+            # before any audio output.
             requested = None if voice is None else str(voice).strip().lower()
             current = None if self.voice is None else str(self.voice).strip().lower()
             voice_is_echo = requested == current
-            if not voice_is_echo:
+            if audio_started and not voice_is_echo:
                 raise DuplexConfigError(
                     "session.update cannot change voice after audio output has started",
                     code="voice_update_after_audio_unsupported",
