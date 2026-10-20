@@ -94,6 +94,8 @@ steps:
         source_file_dependencies: omni_qwen3_omni_accuracy
         timeout_in_minutes: 180
         mirror_hardwares: a3_npu_4
+        artifact_paths:
+          - tests/e2e/accuracy/qwen3_omni/results/qwen_omni_acc/*.json
         env:
           VLLM_WORKER_MULTIPROC_METHOD: spawn
           VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
@@ -105,12 +107,7 @@ steps:
           # OOMs on `.to(device)` and every clip reports "ASR / WER failed".
           - export SEED_TTS_WER_EVAL=1
           - export SEED_TTS_EVAL_DEVICE=npu:3
-          - |
-            set +e
-            pytest -s -v tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py -m "full_model and npu and A3" --run-level full_model
-            EXIT=$$?
-            buildkite-agent artifact upload "tests/e2e/accuracy/qwen3_omni/results/qwen_omni_acc/*.json"
-            exit $$EXIT
+          - pytest -s -v tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py -m "full_model and npu and A3" --run-level full_model
       - label: ":full_moon: Omni · Omni-DuplexEval CI Guard"
         source_file_dependencies: omni_duplex_eval_ci
         timeout_in_minutes: 240
