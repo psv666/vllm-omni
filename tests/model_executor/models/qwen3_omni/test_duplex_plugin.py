@@ -459,10 +459,11 @@ async def test_resending_the_current_voice_after_playback_is_a_no_op():
         await h.run(AckPlayback(response_id=response_id, played_ms=1000))
         assert h.session.playback.sent_ms > 0
 
-        # Same voice, different spelling: an echo, not a change.
+        # Same voice, different spelling: an echo, not a change — and the
+        # stored spelling is preserved for plugins that compare it exactly.
         events = await h.run(UpdateSession(patch={"voice": " Chelsie "}))
         assert not any(e.to_realtime().get("type") == "error" for e in events)
-        assert h.session.config.voice.strip().lower() == "chelsie"
+        assert h.session.config.voice == "chelsie"
 
         await h.run(append_audio())
         await h.run(Commit(final=True, create_response=True))

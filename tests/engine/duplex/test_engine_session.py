@@ -787,9 +787,14 @@ def test_apply_realtime_update_rejects_voice_change_after_audio_started():
     # Only a real change is a change: realtime clients resend the whole
     # session object, so a round-tripped voice (same value, any case or
     # spacing) and a null matching a voice-less config must pass the guard.
+    # An echo also keeps the stored spelling: shared plugins may compare the
+    # stored voice exactly.
     config.apply_realtime_update({"voice": "verse"}, audio_started=True)
+    assert config.voice == "verse"
     config.apply_realtime_update({"voice": " VERSE "}, audio_started=True)
-    assert config.voice.strip().lower() == "verse"
+    assert config.voice == "verse"
+    config.apply_realtime_update({"audio": {"output": {"voice": " verse "}}}, audio_started=True)
+    assert config.voice == "verse"
     config.apply_realtime_update({"voice": None}, audio_started=False)
     assert config.voice is None
     config.apply_realtime_update({"voice": None}, audio_started=True)

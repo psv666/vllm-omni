@@ -568,10 +568,12 @@ class DuplexSessionConfig:
             )
         if isinstance(model, str) and self.model is None:
             self.model = model
+        voice_is_echo = False
         if voice_requested and audio_started:
             requested = None if voice is None else str(voice).strip().lower()
             current = None if self.voice is None else str(self.voice).strip().lower()
-            if requested != current:
+            voice_is_echo = requested == current
+            if not voice_is_echo:
                 raise DuplexConfigError(
                     "session.update cannot change voice after audio output has started",
                     code="voice_update_after_audio_unsupported",
@@ -584,7 +586,10 @@ class DuplexSessionConfig:
             self.instructions = str(payload["instructions"])
         elif "instructions" in payload and payload.get("instructions") is None:
             self.instructions = None
-        if isinstance(voice, str):
+        if isinstance(voice, str) and not voice_is_echo:
+            # An echo keeps the stored spelling: this config is shared across
+            # plugins, and some (PersonaPlex) compare the stored voice exactly,
+            # so a case or whitespace variant must not overwrite it.
             self.voice = str(voice)
         elif voice_requested and voice is None:
             # Includes a nested audio.output.voice null, which the guard above
