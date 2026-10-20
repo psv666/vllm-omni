@@ -91,9 +91,18 @@ def test_valid_video_cache_is_reused(mocker, synthetic_audio, tmp_path, embed_au
     assert np.array_equal(cached["np_array"], media._np_array_from_mp4_bytes(base64.b64decode(result["base64"])))
 
 
-@pytest.mark.parametrize("corruption", ["empty", "invalid-header", "truncated-audio"])
-def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruption):
-    result = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+@pytest.mark.parametrize(
+    "corruption, embed_audio",
+    [
+        pytest.param("empty", False, id="empty-video-only"),
+        pytest.param("empty", True, id="empty-with-audio"),
+        pytest.param("invalid-header", False, id="invalid-header-video-only"),
+        pytest.param("invalid-header", True, id="invalid-header-with-audio"),
+        pytest.param("truncated-audio", True, id="truncated-audio"),
+    ],
+)
+def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruption, embed_audio):
+    result = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
     cache_path = Path(result["file_path"])
     raw = cache_path.read_bytes()
     if corruption == "empty":
@@ -117,16 +126,50 @@ def test_corrupt_video_cache_is_regenerated(synthetic_audio, tmp_path, corruptio
             stream = container.streams.audio[0]
             samples = sum(frame.samples for frame in container.decode(audio=0))
             assert 0 < samples < stream.duration * stream.time_base * stream.codec_context.sample_rate
+    if not embed_audio:
+        with pytest.raises(RuntimeError):
+            media._np_array_from_mp4_bytes(corrupt)
     cache_path.write_bytes(corrupt)
 
-    repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=True, cache_dir=tmp_path)
+    repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
 
     repaired_bytes = base64.b64decode(repaired["base64"])
     assert repaired_bytes == cache_path.read_bytes()
     assert repaired_bytes != corrupt
     assert repaired["np_array"].shape == (6, 64, 64, 3)
     with av.open(io.BytesIO(repaired_bytes)) as container:
-        assert sum(frame.samples for frame in container.decode(audio=0)) > 0
+        if embed_audio:
+            assert sum(frame.samples for frame in container.decode(audio=0)) > 0
+        else:
+            assert not container.streams.audio
+            synthetic_audio.assert_not_called()
+
+
+@pytest.mark.parametrize("embed_audio", [False, True], ids=["video-only", "with-audio"])
+def test_truncated_video_cache_is_regenerated(synthetic_audio, tmp_path, embed_audio):
+    result = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
+    cache_path = Path(result["file_path"])
+    raw = cache_path.read_bytes()
+    with av.open(io.BytesIO(raw)) as container:
+        last_video = max(packet.pos for packet in container.demux(video=0) if packet.pos is not None and packet.size)
+    corrupt = raw[:last_video]
+    # The video still opens, so the frame-count check must reject video-only caches.
+    assert 0 < len(media._np_array_from_mp4_bytes(corrupt)) < 6
+    cache_path.write_bytes(corrupt)
+
+    repaired = media.generate_synthetic_video(64, 64, 6, embed_audio=embed_audio, cache_dir=tmp_path)
+
+    repaired_bytes = base64.b64decode(repaired["base64"])
+    assert repaired["np_array"].shape == (6, 64, 64, 3)
+    assert repaired_bytes == cache_path.read_bytes()
+    assert repaired_bytes != corrupt
+    assert len(media._np_array_from_mp4_bytes(repaired_bytes)) == 6
+    with av.open(io.BytesIO(repaired_bytes)) as container:
+        if embed_audio:
+            assert sum(frame.samples for frame in container.decode(audio=0)) > 0
+        else:
+            assert not container.streams.audio
+            synthetic_audio.assert_not_called()
 
 
 def test_video_cache_is_published_atomically(monkeypatch, synthetic_audio, tmp_path):
