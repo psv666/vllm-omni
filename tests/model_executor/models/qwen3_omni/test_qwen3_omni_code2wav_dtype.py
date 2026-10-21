@@ -3,20 +3,23 @@
 
 import pytest
 import torch
+from transformers import Qwen3OmniMoeConfig
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import Qwen3OmniMoeCode2WavConfig
-from vllm.config import DeviceConfig, VllmConfig
+from vllm.config import CacheConfig, DeviceConfig, VllmConfig
 from vllm.platforms.interface import DeviceCapability
 from vllm.utils.torch_utils import set_default_torch_dtype
 
 from vllm_omni.config.model import OmniModelConfig
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.model_executor.models.common.snake_activation import SnakeBeta
 from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_code2wav import Qwen3OmniMoeCode2Wav
 from vllm_omni.platforms import current_omni_platform
 
 pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
-def _codec(mocker, dtype, device="cuda"):
-    config = Qwen3OmniMoeCode2WavConfig(
+def _codec_config():
+    return Qwen3OmniMoeCode2WavConfig(
         hidden_size=32,
         intermediate_size=64,
         num_hidden_layers=1,
@@ -29,9 +32,12 @@ def _codec(mocker, dtype, device="cuda"):
         codebook_size=16,
         num_quantizers=2,
     )
+
+
+def _codec(mocker, dtype, device="cuda", connector=None):
     vllm_config = mocker.Mock(
         spec=VllmConfig,
-        model_config=mocker.Mock(spec=OmniModelConfig, hf_config=config, stage_connector_config=None),
+        model_config=mocker.Mock(spec=OmniModelConfig, hf_config=_codec_config(), stage_connector_config=connector),
         device_config=mocker.Mock(spec=DeviceConfig, device=torch.device(device)),
         quant_config=None,
     )
@@ -74,6 +80,7 @@ def test_affected_codec_uses_float32(mocker, blackwell_cudnn, capability, dtype)
         (True, "cuda", None, 92000, torch.bfloat16),
         (True, "cuda", DeviceCapability(10, 3), None, torch.bfloat16),
         (True, "cuda", DeviceCapability(10, 3), 91900, torch.bfloat16),
+        (True, "cuda", DeviceCapability(10, 3), 92001, torch.bfloat16),
         (True, "cuda", DeviceCapability(10, 3), 92100, torch.bfloat16),
         (True, "cuda", DeviceCapability(10, 3), 92400, torch.bfloat16),
         (True, "cuda", DeviceCapability(10, 3), 92000, torch.float32),
@@ -86,6 +93,98 @@ def test_other_environments_keep_dtype(mocker, blackwell_cudnn, cuda, device, ca
     model = _codec(mocker, dtype, device)
 
     assert {p.dtype for p in model.parameters()} == {dtype}
+
+
+@pytest.mark.parametrize("typed_connector", [False, True])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_opt_out_preserves_requested_dtype_and_caches(mocker, blackwell_cudnn, typed_connector, dtype):
+    extra = {"codec_cudnn_fp32_fallback": False}
+    connector = ConnectorSpec("SharedMemoryConnector", extra) if typed_connector else {"extra": extra}
+    model = _codec(mocker, dtype, connector=connector)
+    model.precompute_snake_caches()
+
+    assert {p.dtype for p in model.parameters()} == {dtype}
+    for module in model.modules():
+        if isinstance(module, SnakeBeta):
+            assert module._exp_alpha.dtype == module._inv_beta.dtype == dtype
+    assert extra == {"codec_cudnn_fp32_fallback": False}
+    blackwell_cudnn.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["false", 0, 1, None])
+def test_invalid_fallback_option_fails_before_model_construction(mocker, value):
+    with pytest.raises(ValueError, match="codec_cudnn_fp32_fallback must be a boolean"):
+        _codec(mocker, torch.float32, device="cpu", connector={"extra": {"codec_cudnn_fp32_fallback": value}})
+
+
+@pytest.mark.parametrize("profile", ["qwen3_omni_moe.yaml", "qwen3_omni_moe_mrv2.yaml"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_deploy_option_reaches_both_decoder_placements(mocker, blackwell_cudnn, tmp_path, profile, fallback):
+    from tests.helpers.stage_config import get_deploy_config_path
+    from vllm_omni.config.stage_config import resolve_deploy_yaml
+    from vllm_omni.distributed.omni_connectors.utils.initialization import load_omni_transfer_config
+    from vllm_omni.engine.arg_utils import OmniEngineArgs
+    from vllm_omni.engine.stage_init_utils import get_stage_connector_spec
+    from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni import Qwen3OmniMoeForConditionalGeneration
+
+    mocker.patch.dict("os.environ", {"VLLM_OMNI_TALKER_FIRST_AUDIO": "1"})
+    overlay = tmp_path / "deploy.yaml"
+    overlay.write_text(
+        f"base_config: {get_deploy_config_path(profile)}\n"
+        "connectors:\n  connector_of_shared_memory:\n    extra:\n"
+        f"      codec_cudnn_fp32_fallback: {str(fallback).lower()}\n"
+    )
+    transfer = load_omni_transfer_config(config_dict=resolve_deploy_yaml(overlay))
+    config = Qwen3OmniMoeConfig(
+        architectures=["Qwen3OmniMoeForConditionalGeneration"], code2wav_config=_codec_config().to_dict()
+    )
+    checkpoint_dir = tmp_path / "model"
+    config.save_pretrained(checkpoint_dir)
+    decoders = []
+    for stage_id in (1, 2):
+        spec = get_stage_connector_spec(transfer, stage_id, async_chunk=True)
+        model_config = OmniEngineArgs(
+            model=str(checkpoint_dir),
+            skip_tokenizer_init=True,
+            dtype="bfloat16",
+            stage_id=stage_id,
+            model_stage="talker" if stage_id == 1 else "code2wav",
+            worker_cls=(
+                "vllm_omni.worker.gpu_ar_worker.GPUARWorker"
+                if stage_id == 1
+                else "vllm_omni.worker.gpu_generation_worker.GPUGenerationWorker"
+            ),
+            stage_connector_spec=spec,
+            async_chunk=True,
+            use_v2_model_runner=profile.endswith("mrv2.yaml"),
+        ).create_model_config()
+        vllm_config = VllmConfig(
+            model_config=model_config,
+            device_config=DeviceConfig(device="cpu"),
+            cache_config=CacheConfig(enable_prefix_caching=False),
+        )
+        # Detection is simulated; no tensor or CUDA context is allocated.
+        vllm_config.device_config.device = torch.device("cuda")
+        with set_default_torch_dtype(model_config.dtype):
+            if stage_id == 1:
+                first = Qwen3OmniMoeForConditionalGeneration._build_first_frame_decoder(
+                    vllm_config, config.code2wav_config, ""
+                )
+                assert (first is not None) == profile.endswith("mrv2.yaml")
+                if first is not None:
+                    decoders.append(first.code2wav)
+            else:
+                decoders.append(
+                    Qwen3OmniMoeCode2Wav(
+                        vllm_config=vllm_config.with_hf_config(
+                            config.code2wav_config, architectures=["Qwen3OmniMoeCode2Wav"]
+                        )
+                    )
+                )
+        assert model_config.dtype == torch.bfloat16
+        assert model_config.stage_connector_config["extra"]["codec_cudnn_fp32_fallback"] is fallback
+    expected = torch.float32 if fallback else torch.bfloat16
+    assert all({p.dtype for p in decoder.parameters()} == {expected} for decoder in decoders)
 
 
 def test_explicit_device_index_takes_precedence(mocker, blackwell_cudnn):

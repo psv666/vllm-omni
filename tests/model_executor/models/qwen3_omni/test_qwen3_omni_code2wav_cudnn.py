@@ -21,7 +21,7 @@ pytestmark = [
 ]
 
 
-def _codec(enabled, dtype=torch.float32):
+def _codec(enabled, dtype=torch.float32, *, fp32_fallback=True, fused_snake=False):
     config = Qwen3OmniMoeCode2WavConfig(
         hidden_size=32,
         intermediate_size=64,
@@ -38,7 +38,14 @@ def _codec(enabled, dtype=torch.float32):
     config._attn_implementation = "sdpa"
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
-            hf_config=config, stage_connector_config={"extra": {"codec_cudnn_benchmark": enabled}}
+            hf_config=config,
+            stage_connector_config={
+                "extra": {
+                    "codec_cudnn_benchmark": enabled,
+                    "codec_cudnn_fp32_fallback": fp32_fallback,
+                    "codec_fused_snake": fused_snake,
+                }
+            },
         ),
         device_config=DeviceConfig(device="cuda"),
         quant_config=None,
@@ -50,20 +57,22 @@ def _codec(enabled, dtype=torch.float32):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("fp32_fallback", [False, True])
 @torch.inference_mode()
-def test_dtype_fallback_matches_float32_with_cuda_graph(mocker, dtype):
+def test_dtype_policy_matches_reference_with_cuda_graph(mocker, dtype, fp32_fallback):
     # Exercise the workaround on CI GPUs too. This checks execution and graph
     # compatibility, not reproduction of the SM100/SM103 cuDNN numerical bug.
     mocker.patch.object(torch.backends.cudnn, "version", return_value=92000)
     mocker.patch.object(current_omni_platform, "get_device_capability", return_value=DeviceCapability(10, 3))
     torch.manual_seed(8935)
-    reference = _codec(False)
+    expected_dtype = torch.float32 if fp32_fallback else dtype
+    reference = _codec(False, expected_dtype, fp32_fallback=False, fused_snake=True)
     checkpoint = [("code2wav." + name, p.to(dtype)) for name, p in reference.named_parameters()]
-    model = _codec(False, dtype)
+    model = _codec(False, dtype, fp32_fallback=fp32_fallback, fused_snake=True)
     assert model.load_weights(checkpoint) == reference.load_weights(checkpoint)
     model.precompute_snake_caches()
     reference.precompute_snake_caches()
-    assert {p.dtype for p in model.parameters()} == {torch.float32}
+    assert {p.dtype for p in model.parameters()} == {expected_dtype}
 
     for frames in (4, 29, 50):
         codes = torch.randint(0, 16, (1, 2, frames), device="cuda")
@@ -75,7 +84,8 @@ def test_dtype_fallback_matches_float32_with_cuda_graph(mocker, dtype):
             captured = model(codes)
         codes.random_(0, 16)
         graph.replay()
-        assert captured.dtype == torch.float32
+        assert captured.dtype == expected_dtype
+        assert torch.isfinite(captured).all()
         torch.testing.assert_close(captured, reference(codes))
 
 

@@ -168,6 +168,9 @@ class Qwen3OmniMoeCode2Wav(nn.Module, Qwen3OmniNestedSupportsQuant):
         self._cudnn_benchmark = (extra or {}).get("codec_cudnn_benchmark", False)
         if not isinstance(self._cudnn_benchmark, bool):
             raise ValueError("codec_cudnn_benchmark must be a boolean")
+        cudnn_fp32_fallback = (extra or {}).get("codec_cudnn_fp32_fallback", True)
+        if not isinstance(cudnn_fp32_fallback, bool):
+            raise ValueError("codec_cudnn_fp32_fallback must be a boolean")
 
         # Calculate total upsampling factor
         self.total_upsample = np.prod(self.config.upsample_rates + self.config.upsampling_ratios)
@@ -224,7 +227,8 @@ class Qwen3OmniMoeCode2Wav(nn.Module, Qwen3OmniNestedSupportsQuant):
         ):
             use_fused_snake(self.decoder)
 
-        self._apply_cudnn_dtype_workaround(vllm_config)
+        if cudnn_fp32_fallback:
+            self._apply_cudnn_dtype_workaround(vllm_config)
 
         # CUDA Graph support — reuses CUDAGraphDecoderWrapper from Qwen3-TTS
         self._cudagraph_enabled = False
@@ -233,6 +237,7 @@ class Qwen3OmniMoeCode2Wav(nn.Module, Qwen3OmniNestedSupportsQuant):
         self._streaming_batch_sizes: dict[int, list[int]] = {}
 
     def _apply_cudnn_dtype_workaround(self, vllm_config: VllmConfig) -> None:
+        """Promote this decoder on the exact stack reported in issue #8935."""
         # cuDNN 9.20.0 produces incorrect low-precision Conv1d results for some
         # Code2Wav window lengths on SM100/SM103 (issue #8935). Apply the
         # known FP32 workaround before weight loading, Snake caches and graph
@@ -254,7 +259,8 @@ class Qwen3OmniMoeCode2Wav(nn.Module, Qwen3OmniNestedSupportsQuant):
         logger.warning_once(
             "Using float32 for Qwen3-Omni Code2Wav to avoid incorrect cuDNN 9.20.0 "
             "low-precision Conv1d results on SM%d%d. This increases decoder memory "
-            "use. The fallback is disabled with cuDNN 9.21 or newer.",
+            "use. This fallback applies only to cuDNN 9.20.0. Set "
+            "codec_cudnn_fp32_fallback=false in connector extra to retain the requested dtype.",
             capability.major,
             capability.minor,
         )

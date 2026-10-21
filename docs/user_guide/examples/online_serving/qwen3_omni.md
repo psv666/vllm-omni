@@ -43,9 +43,41 @@ also covers the optional first-frame decoder inside the Talker; Thinker and
 Talker generation retain their configured precision. It takes effect before
 weight loading and CUDA Graph capture, and logs a warning at startup.
 
+The automatic guard matches **exactly cuDNN 9.20.0** (runtime version `92000`),
+the version reported in the issue. Other versions retain the configured
+precision; this is not a claim that all other versions are unaffected. The
+issue reports successful tests with 9.21.0.82 and 9.24.0.43, but NVIDIA's
+[9.21 release notes](https://docs.nvidia.com/deeplearning/cudnn/backend/v9.21.0/release-notes.html)
+do not explicitly identify this Conv1d numerical issue as fixed.
+
+The fallback also overrides an **explicit** BF16/FP16 stage dtype. To retain
+the requested precision, set the boolean `codec_cudnn_fp32_fallback: false`
+in the connector's `extra` settings. For example, save this as `deploy.yaml`
+and launch with `--deploy-config deploy.yaml`:
+
+```yaml
+base_config: /absolute/path/to/vllm_omni/deploy/qwen3_omni_moe.yaml
+connectors:
+  connector_of_shared_memory:
+    extra:
+      codec_cudnn_fp32_fallback: false
+```
+
+Use the MRv2 deployment as `base_config` if that is your existing profile.
+The bundled profiles share this connector definition, so the setting reaches
+both the Code2Wav stage and the Talker's optional decoder copy. For custom
+profiles with different connectors, set it on the incoming connector used by
+each of those stages. Disabling the fallback can reintroduce the reported
+audio corruption; only do so after validating your stack and decode windows.
+
 FP32 increases Code2Wav memory use; latency depends on the selected kernels.
-The fallback is limited to
-cuDNN 9.20.0 on these GPUs; newer cuDNN versions retain the configured precision.
+The Instruct checkpoint's 216,016,577 Code2Wav parameters occupy about 412 MiB
+in BF16/FP16 and 824 MiB in FP32, an increase of 412 MiB **per decoder copy**.
+The default profile loads one copy. Profiles enabling Talker first-frame audio
+load a second copy, adding another 412 MiB to the Talker process. Activations,
+cuDNN workspace and CUDA Graph pools need additional memory; these weight-only
+figures do not establish the peak memory or that a deployment fits its budgets.
+
 For releases without this automatic fallback, the default separate Code2Wav
 stage can be run in FP32 with
 `--stage-overrides '{"2": {"dtype": "float32"}}'`.
