@@ -120,6 +120,8 @@ def test_qwen3_omni_daily_omni_accuracy_bench(omni_server) -> None:
 # Earlier checked-in runs scored WER 0.217 and 0.223. SIM 0.75 is 0.074
 # under the L20X mean; UTMOS 3.10 is 0.25 under the L20X mean. H100 and
 # B200 still need their own SIM and UTMOS measurement before tightening.
+# A3 applies the WER and SIM gates; its MOS floor stays off until an A3
+# run measures one.
 _MAX_SEED_TTS_MEAN_WER = 0.35
 _MIN_SEED_TTS_MEAN_SIM = 0.75
 _MIN_SEED_TTS_MEAN_UTMOS = 3.10
@@ -137,9 +139,12 @@ def test_qwen3_omni_seed_tts_wer_bench(omni_server) -> None:
             str(_MAX_SEED_TTS_MEAN_WER),
             "--min-seed-tts-mean-sim",
             str(_MIN_SEED_TTS_MEAN_SIM),
-            "--min-seed-tts-mean-utmos",
-            str(_MIN_SEED_TTS_MEAN_UTMOS),
         ]
     )
+    if not current_omni_platform.is_npu():
+        # The A3 runner is offline and does not cache balacoon/utmos, so
+        # enabling this floor would fail before scoring any clip. CUDA and
+        # ROCm still gate on it.
+        argv.extend(["--min-seed-tts-mean-utmos", str(_MIN_SEED_TTS_MEAN_UTMOS)])
     ns = _acc_bench.parse_acc_benchmark_args(argv)
     assert _acc_bench.run_acc_benchmark(ns) == 0
