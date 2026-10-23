@@ -518,6 +518,30 @@ class OmniGPUModelRunner(GPUModelRunner):
             0,
         )
 
+    def _make_dummy_input_batch(
+        self,
+        num_reqs: int,
+        num_tokens: int,
+        *,
+        max_query_len: int | None,
+        is_padding: bool,
+    ) -> Any:
+        from vllm.v1.worker.gpu.input_batch import InputBatch
+
+        return InputBatch.make_dummy(
+            num_reqs,
+            num_tokens,
+            self.input_buffers,
+            max_query_len=max_query_len,
+            is_padding=is_padding,
+        )
+
+    def _forward_context(self, attn_metadata: Any, vllm_config: Any, **kwargs: Any):
+        """Forward-context scope. NPU replaces this with the Ascend context."""
+        kwargs.pop("in_profile_run", None)
+        kwargs.pop("num_actual_tokens", None)
+        return set_forward_context(attn_metadata, vllm_config, **kwargs)
+
     def _dispatch_batch_descriptor(
         self,
         *,
@@ -666,12 +690,9 @@ class OmniGPUModelRunner(GPUModelRunner):
                 )
                 self._set_active_loras(*lora_inputs)
         else:
-            from vllm.v1.worker.gpu.input_batch import InputBatch
-
-            input_batch = InputBatch.make_dummy(
+            input_batch = self._make_dummy_input_batch(
                 batch_desc.num_reqs or num_reqs,
                 batch_desc.num_tokens,
-                self.input_buffers,
                 max_query_len=batch_desc.max_query_len,
                 is_padding=not is_profile,
             )
@@ -766,10 +787,12 @@ class OmniGPUModelRunner(GPUModelRunner):
                     self.model.set_runner_assisted_full_attention_metadata_context(
                         enabled=True, num_reqs=input_batch.num_reqs
                     )
-                with set_forward_context(
+                with self._forward_context(
                     attn_metadata,
                     self.vllm_config,
                     num_tokens=input_batch.num_tokens_after_padding,
+                    num_actual_tokens=input_batch.num_tokens,
+                    in_profile_run=is_profile,
                     cudagraph_runtime_mode=CUDAGraphMode.FULL if runner_assisted_full_attn else batch_desc.cg_mode,
                     num_tokens_across_dp=dp_sync.num_tokens_across_dp if dp_sync is not None else None,
                     batch_descriptor=batch_descriptor,
