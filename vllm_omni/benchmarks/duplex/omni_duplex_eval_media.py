@@ -176,7 +176,9 @@ def iter_jpegs(
     path: str | Path, *, fps: float = 1.0, duration: float | None = None, quality: int = 3
 ) -> Iterator[tuple[float, bytes]]:
     end = duration if duration is not None else video_duration(path)
-    step = 1.0 / fps
+    if not math.isfinite(fps) or fps <= 0 or not math.isfinite(end) or end < 0:
+        raise ValueError("fps must be finite and positive; video duration must be finite and nonnegative")
+    index = 0
     timestamp = 0.0
     while timestamp < end:
         try:
@@ -186,7 +188,10 @@ def iter_jpegs(
             break
         if frame:
             yield timestamp, frame
-        timestamp += step
+        # Repeated addition can turn the excluded endpoint into an extra frame
+        # (e.g. 4 seconds at 1.5 fps ends at 3.9999999999999996).
+        index += 1
+        timestamp = index / fps
 
 
 def read_audio_pcm16(path: str | Path) -> bytes:

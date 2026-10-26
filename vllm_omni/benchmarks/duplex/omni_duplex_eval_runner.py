@@ -531,7 +531,7 @@ async def generate_sample(
         raise ValueError("video duration must be finite and nonnegative")
     # Short instruction audio must not cut off the clip's remaining frames.
     # Pad before adding VAD silence or reserving a residual unit for commit.
-    video_bytes = round(prepared.duration * PCM16_SAMPLE_RATE) * PCM16_BYTES_PER_SAMPLE
+    video_bytes = math.ceil(prepared.duration * PCM16_SAMPLE_RATE) * PCM16_BYTES_PER_SAMPLE
     pcm = prepared.pcm.ljust(video_bytes, b"\0")
     if server_turns:
         # No final commit: trailing silence lets the VAD close the last turn.
@@ -563,7 +563,13 @@ async def generate_sample(
             # model's decision on the end of the clip arrives after the commit.
             period_ms = chunk_period_ms(client.events.events)
             if len(pcm) >= PCM16_BYTES_PER_SAMPLE and not has_residual_model_unit(pcm, chunk_period_ms=period_ms):
-                pcm = pcm[:-PCM16_BYTES_PER_SAMPLE]
+                trimmed_end_s = (len(pcm) // PCM16_BYTES_PER_SAMPLE - 1) / PCM16_SAMPLE_RATE
+                if prepared.frames and prepared.frames[-1][0] >= trimmed_end_s:
+                    # A real frame in the final sample must survive. Keep that
+                    # sample and add silence for commit's residual unit instead.
+                    pcm += bytes(PCM16_BYTES_PER_SAMPLE)
+                else:
+                    pcm = pcm[:-PCM16_BYTES_PER_SAMPLE]
         image_items = (
             ImageItemWindow(client.send, item_prefix=f"duplexeval_frame_{sample.id}")
             if frame_transport == FRAME_TRANSPORT_IMAGE_ITEMS

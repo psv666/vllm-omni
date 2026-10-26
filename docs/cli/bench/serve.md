@@ -355,6 +355,11 @@ interval. Up to two frames fit in an append. A higher density fails explicitly;
 reduce `--duplex-eval-fps` (or standalone `--fps`) instead of dropping frames.
 To replace standalone responses generated before this correction, use
 `generate --overwrite` or a new response directory.
+With `server_vad`, the full video continues after speech ends: silent audio and
+later frames are still sent before the extra VAD tail silence. Speech can end a
+turn before the clip finishes; later image items update the session context but
+do not themselves trigger another response. Input coverage therefore does not
+guarantee that every post-speech frame contributes to an answer.
 Settling is not an acknowledgement
 that all final input has been processed. Frames use the transport advertised by
 the server: native video frames or bounded image conversation items for Qwen3.

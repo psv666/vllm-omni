@@ -17,6 +17,7 @@ from vllm_omni.benchmarks.duplex.omni_duplex_eval_media import (
     _video_thread_type,
     extract_jpeg,
     iter_av_units,
+    iter_jpegs,
     materialize_media,
     mix_pcm16,
     read_audio_pcm16,
@@ -135,6 +136,14 @@ def _make_synthetic_ogg(duration: float = 1.0, sample_rate: int = 16000) -> byte
         for pkt in stream.encode():
             container.mux(pkt)
     return buf.getvalue()
+
+
+def test_iter_jpegs_fractional_fps_excludes_clip_endpoint(tmp_path):
+    path = tmp_path / "fractional.mp4"
+    path.write_bytes(_make_synthetic_mp4(duration=4.0))
+    frames = list(iter_jpegs(path, fps=1.5, duration=4.0))
+    assert [timestamp for timestamp, _ in frames] == pytest.approx([0, 2 / 3, 4 / 3, 2, 8 / 3, 10 / 3])
+    assert all(jpeg.startswith(b"\xff\xd8") for _, jpeg in frames)
 
 
 class TestVideoThreadType:
