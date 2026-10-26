@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -391,6 +392,102 @@ async def test_generate_exercises_realtime_socket_and_media_clock(
     assert result.request_metrics[0]["sample_id"] == "sample"
     assert result.session_metrics["stream_ttfp_ms"] is not None
     assert any(event["type"] == "playback.ack" for event in received)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_detection", ["none", "server_vad"])
+@pytest.mark.parametrize("duration", [1.125, 2.0])
+@pytest.mark.parametrize("audio_duration", [0.25, 2.25])
+async def test_generate_preserves_av_inputs(tmp_path, monkeypatch, turn_detection, duration, audio_duration):
+    import websockets
+
+    from vllm_omni.protocol.realtime.items import validate_realtime_video_frames
+
+    pcm = b"\x01\x00" * round(audio_duration * 16000)
+    frames = tuple((index / 2, b"\xff\xd8frame" + bytes([index])) for index in range(math.ceil(duration * 2)))
+    prepared = runner.PreparedSample(pcm, frames, duration, None, None)
+    received = []
+    server_turns = turn_detection == "server_vad"
+    capabilities = (
+        {"required_input_modalities": ["audio"], "optional_input_modalities": [], "supports_image_input": True}
+        if server_turns
+        else {"chunk_period_ms": 1000}
+    )
+
+    async def handler(socket):
+        responded = False
+        async for raw in socket:
+            event = json.loads(raw)
+            received.append(event)
+            if event["type"] == "session.update":
+                await socket.send(json.dumps({"type": "session.created", "session": {"capabilities": capabilities}}))
+            elif not responded and event["type"] == (
+                "input_audio_buffer.append" if server_turns else "input_audio_buffer.commit"
+            ):
+                responded = True
+                for response in [
+                    *([] if server_turns else [{"type": "input_audio_buffer.committed"}]),
+                    {"type": "response.created", "response": {"id": "r1"}},
+                    {"type": "response.done", "response": {"id": "r1"}},
+                ]:
+                    await socket.send(json.dumps(response))
+            elif event["type"] == "session.close":
+                await socket.send(json.dumps({"type": "session.closed"}))
+                return
+
+    monkeypatch.setattr(runner, "SERVER_VAD_TAIL_S", 0.064)
+    monkeypatch.setattr(runner, "_SERVER_TURN_SETTLE_S", 0.01)
+    monkeypatch.setattr(runner, "_COMPLETION_SETTLE_S", 0.01)
+    sample = DuplexSample.from_row({"id": "sample", "split": "PR_correction"})
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        result = await runner.generate_sample(
+            sample,
+            url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1/realtime",
+            model="mock",
+            ref_audio=None,
+            output_root=tmp_path,
+            prepared=prepared,
+            pace="realtime" if server_turns else "as-fast-as-possible",
+            turn_detection=turn_detection,
+        )
+
+    expected_pcm = pcm + bytes(max(0, round(duration * 16000) * 2 - len(pcm)))
+    if server_turns:
+        expected_pcm += bytes(1024 * 2)
+    elif len(expected_pcm) % 32000 == 0:
+        # Preserve the existing residual-unit commit handshake.
+        expected_pcm = expected_pcm[:-2]
+    appends = [event for event in received if event["type"] == "input_audio_buffer.append"]
+    assert b"".join(base64.b64decode(event["audio"]) for event in appends) == expected_pcm
+    sent_frames = []
+    pending_images = []
+    offset = 0
+    timestamps = {frame: timestamp for timestamp, frame in frames}
+    for event in received:
+        if event["type"] == "conversation.item.create":
+            url = event["item"]["content"][0]["image_url"]
+            pending_images.append(base64.b64decode(url.split(",", 1)[1]))
+        elif event["type"] == "input_audio_buffer.append":
+            chunk = base64.b64decode(event["audio"])
+            end = offset + len(chunk) // 2
+            if server_turns:
+                assert "video_frames" not in event
+                assert len(chunk) <= 1024
+                attached = pending_images
+                pending_images = []
+            else:
+                encoded = event.get("video_frames", [])
+                assert validate_realtime_video_frames(encoded, None) is None
+                attached = [base64.b64decode(frame) for frame in encoded]
+            for frame in attached:
+                assert offset / 16000 <= timestamps[frame] < end / 16000
+            sent_frames.extend(attached)
+            offset = end
+    assert not pending_images
+    assert sent_frames == [frame for _, frame in frames]
+    assert any(event["type"] == "input_audio_buffer.commit" for event in received) is not server_turns
+    assert not result.error and result.metadata["response_done"]
+    assert prepared.pcm == pcm  # Readiness, warmups and measurements reuse this object.
 
 
 @pytest.mark.asyncio

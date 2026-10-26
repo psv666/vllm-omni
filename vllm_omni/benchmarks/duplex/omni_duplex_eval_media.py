@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import tempfile
 import wave
@@ -322,17 +323,36 @@ def mix_pcm16(*tracks: bytes) -> bytes:
 
 def iter_av_units(
     audio_pcm16: bytes, frames: Iterator[tuple[float, bytes]], *, unit_ms: int = 1000
-) -> Iterator[tuple[bytes, bytes | None]]:
+) -> Iterator[tuple[bytes, bytes | list[bytes] | None]]:
+    """Attach every frame in each audio interval [start, end), including the tail.
+
+    Audio must cover the video timeline. Frames that cannot fit the interval or
+    the wire's two-image limit fail explicitly instead of being lost or delayed.
+    """
+    if unit_ms <= 0 or len(audio_pcm16) % PCM16_BYTES_PER_SAMPLE:
+        raise ValueError("unit_ms must be positive and PCM16 must contain whole samples")
     unit_bytes = PCM16_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE * unit_ms // 1000
+    bytes_per_second = PCM16_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE
     frame_iter = iter(frames)
     next_frame = next(frame_iter, None)
+    previous_timestamp = -1.0
     for offset in range(0, len(audio_pcm16), unit_bytes):
-        timestamp = offset / (PCM16_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE)
-        frame = None
-        if next_frame is not None and next_frame[0] <= timestamp + unit_ms / 1000:
-            frame = next_frame[1]
+        end = min(offset + unit_bytes, len(audio_pcm16))
+        selected: list[bytes] = []
+        while next_frame is not None:
+            timestamp, frame = next_frame
+            if not math.isfinite(timestamp) or timestamp < 0 or timestamp < previous_timestamp:
+                raise ValueError("frame timestamps must be finite, nonnegative and ordered")
+            if timestamp >= end / bytes_per_second:
+                break
+            selected.append(frame)
+            if len(selected) > 2:
+                raise ValueError("Realtime permits at most two frames per audio unit; reduce fps or unit_ms")
+            previous_timestamp = timestamp
             next_frame = next(frame_iter, None)
-        yield audio_pcm16[offset : offset + unit_bytes], frame
+        yield audio_pcm16[offset:end], selected[0] if len(selected) == 1 else selected or None
+    if next_frame is not None:
+        raise ValueError("frame timestamp is outside the audio timeline")
 
 
 def _ffmpeg_q_to_pil_quality(quality: int) -> int:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -526,7 +527,12 @@ async def generate_sample(
         prepared = await asyncio.to_thread(
             prepare_sample, sample, media_dir=output.parent / ".media", ref_audio=ref_audio, fps=fps, mix=mix
         )
-    pcm = prepared.pcm
+    if not math.isfinite(prepared.duration) or prepared.duration < 0:
+        raise ValueError("video duration must be finite and nonnegative")
+    # Short instruction audio must not cut off the clip's remaining frames.
+    # Pad before adding VAD silence or reserving a residual unit for commit.
+    video_bytes = round(prepared.duration * PCM16_SAMPLE_RATE) * PCM16_BYTES_PER_SAMPLE
+    pcm = prepared.pcm.ljust(video_bytes, b"\0")
     if server_turns:
         # No final commit: trailing silence lets the VAD close the last turn.
         pcm += bytes(round(SERVER_VAD_TAIL_S * PCM16_SAMPLE_RATE) * PCM16_BYTES_PER_SAMPLE)
