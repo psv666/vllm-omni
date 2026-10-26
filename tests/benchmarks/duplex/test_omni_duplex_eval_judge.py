@@ -4,6 +4,7 @@
 """Judge failures must not become model scores or leave stale scores active."""
 
 import json
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -109,6 +110,35 @@ def test_incomplete_reply_preserves_diagnostics_without_a_score(sample_paths, ju
     assert evaluator.summarize_scores(score.parent)["samples"] == 0
 
 
+@pytest.mark.parametrize(
+    "completion",
+    [
+        pytest.param({}, id="omitted"),
+        pytest.param({"finish_reason": None}, id="null"),
+        pytest.param({"finish_reason": "length"}, id="length"),
+        pytest.param({"finish_reason": "content_filter"}, id="content_filter"),
+        pytest.param({"finish_reason": "tool_calls"}, id="tool_calls"),
+        pytest.param({"finish_reason": "function_call"}, id="function_call"),
+        pytest.param({"finish_reason": "unknown"}, id="unknown"),
+    ],
+)
+def test_valid_score_requires_explicit_completion(sample_paths, judge_http, completion):
+    raw = '{"success_score": 0}'
+    response = requests.Response()
+    response.status_code = 200
+    response._content = json.dumps({"choices": [{"message": {"content": raw}, **completion}]}).encode()
+    judge_http.return_value = response
+    with pytest.raises(judge_module.JudgeResponseError, match="finish_reason"):
+        _evaluate(sample_paths)
+    score = sample_paths[2]
+    assert not score.exists()
+    assert evaluator.summarize_scores(score.parent)["samples"] == 0
+    trace = _trace(score)
+    assert len(trace) == 1
+    assert trace[0]["raw_response"] == raw
+    assert trace[0]["finish_reason"] == completion.get("finish_reason")
+
+
 @pytest.mark.parametrize("raw", ['{"reasoning": "unknown"}', '{"success_score": "bad"}', '{"content_score": 1}'])
 def test_invalid_pr_reply_is_not_published(sample_paths, judge_http, raw):
     judge_http.return_value = _reply(raw)
@@ -125,6 +155,12 @@ def test_failed_retry_archives_old_score_and_excludes_it_from_summary(sample_pat
     _evaluate(sample_paths)
     score = sample_paths[2]
     previous = score.read_bytes()
+    # An unrelated sample must remain counted through another sample's retries.
+    sample, response, _ = sample_paths
+    neighbor = score.with_name("neighbor.json")
+    judge_http.return_value = _reply('{"success_score": 0}')
+    _evaluate((replace(sample, id="neighbor"), response, neighbor))
+    neighbor_bytes = neighbor.read_bytes()
     if failure == "http_error":
         judge_http.return_value = _reply("Judge unavailable", status=503)
         error: type[Exception] = requests.HTTPError
@@ -140,7 +176,20 @@ def test_failed_retry_archives_old_score_and_excludes_it_from_summary(sample_pat
     archives = list(score.parent.glob("sample.json.*.previous"))
     assert len(archives) == 1
     assert archives[0].read_bytes() == previous
-    assert evaluator.summarize_scores(score.parent)["samples"] == 0
+    summary = evaluator.summarize_scores(score.parent)
+    assert summary["samples"] == 1
+    assert summary["pr"]["mean_all_success"] == 0
+    assert neighbor.read_bytes() == neighbor_bytes
+
+    # Recovery publishes only the new result, never the archived successful one.
+    judge_http.return_value = _reply('{"success_score": 0}')
+    _evaluate(sample_paths)
+    summary = evaluator.summarize_scores(score.parent)
+    assert summary["samples"] == 2
+    assert summary["pr"]["mean_all_success"] == 0
+    assert list(score.parent.glob("sample.json.*.previous")) == archives
+    assert archives[0].read_bytes() == previous
+    assert neighbor.read_bytes() == neighbor_bytes
 
 
 def test_successful_retry_counts_valid_zero_and_refreshes_trace(sample_paths, judge_http):

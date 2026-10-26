@@ -54,6 +54,8 @@ class DuplexJudge:
             )
         choice = response.json()["choices"][0]
         content = str(choice["message"]["content"])
+        # The score parser can recover fields from a truncated prefix, so a
+        # parseable score cannot substitute for explicit completion evidence.
         if choice.get("finish_reason") != "stop":
             raise JudgeResponseError(content, choice.get("finish_reason"))
         return content

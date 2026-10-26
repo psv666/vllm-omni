@@ -68,6 +68,7 @@ def evaluate_sample(
     score_path.parent.mkdir(parents=True, exist_ok=True)
     if score_path.exists():
         # A failed retry must not leave an older score eligible for aggregation.
+        # Keep the .previous suffix: summaries and accuracy CI scan *.json.
         score_path.replace(score_path.with_name(f"{score_path.name}.{uuid4().hex}.previous"))
     trace_path = score_path.with_suffix(".judge.jsonl")
     trace_path.write_text("", encoding="utf-8")

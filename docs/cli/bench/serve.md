@@ -455,8 +455,10 @@ are never scored. Judge failures do not discard completed performance measuremen
 Judge replies must finish with `finish_reason="stop"` and contain the required
 scores: `temporal_score` (integer 0–3) and `is_relevant` (0 or 1) for temporal
 judging, `content_score` (finite number 0–3) for content judging, or `success_score`
-(0 or 1) for PR. Missing or invalid scores fail evaluation; a valid zero still
-counts as an evaluated sample. Raw judge replies are saved beside each score in
+(0 or 1) for PR. A missing or null `finish_reason` fails evaluation even when the
+score JSON is valid: a parseable score does not establish that generation finished.
+Missing or invalid scores also fail evaluation; a valid zero from a completed
+reply still counts as an evaluated sample. Raw judge replies are saved beside each score in
 `<sample>.judge.jsonl`. Retrying evaluation archives an existing score as
 `<sample>.json.<unique-id>.previous`, which summaries exclude, and resets the
 reply trace. A failed retry leaves no active score; a new score is published only
