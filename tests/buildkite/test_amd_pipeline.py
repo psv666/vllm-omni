@@ -2371,6 +2371,83 @@ def test_qwen_image_expansion_executes_junit_guard_before_exit(
     )
 
 
+_QWEN25_OMNI_MERGE_NODES = (
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_mix_to_text_audio_001[omni_server0]",
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_audio_in_video_boundaries[False-omni_server0]",
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_audio_in_video_boundaries[True-omni_server0]",
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_text_to_text_001[omni_server0]",
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_speaker_001[Chelsie-omni_server0]",
+    "tests/e2e/online_serving/test_qwen2_5_omni_expansion.py::test_speaker_001[ETHAN-omni_server0]",
+    "tests/e2e/offline_inference/test_qwen2_5_omni_expansion.py::test_mix_to_audio[omni_runner0-rocm]",
+    "tests/e2e/offline_inference/test_qwen2_5_omni_expansion.py::test_text_to_text[omni_runner0-rocm]",
+)
+
+
+def test_qwen25_omni_merge_selects_eight_marked_nodes() -> None:
+    """MERGE runs exactly the eight marked two-card ROCm cases."""
+    step = _find_step("Omni Model Test Qwen2-5-Omni", AMD_MERGE_PIPELINE)
+    command = "\n".join(step["commands"])
+
+    assert step["agent_pool"] == "mi300_2"
+    assert step["grade"] == "NonBlocking"
+    assert step["timeout_in_minutes"] == 180
+    assert step["artifact_paths"] == ["artifacts/rocm-qwen25-omni-merge/**/*"]
+    assert command.count("slow and rocm and MI325 and cards_2") == 2
+    assert "tests/e2e/*/" not in command
+    assert "timeout --signal=TERM --kill-after=2m 165m" in command
+    assert "--shard-id=0 --num-shards=1" in command
+    assert "PIPESTATUS[0]" in command
+    assert "collection.log" in command
+    assert "pytest.xml" in command
+    assert "pytest.log" in command
+    assert "pytest-summary.txt" in command
+    assert "Expected exactly eight executed Qwen2.5-Omni MERGE tests" in command
+    for node in _QWEN25_OMNI_MERGE_NODES:
+        assert node in command
+    assert command.count("test_qwen2_5_omni_expansion.py::") == len(_QWEN25_OMNI_MERGE_NODES)
+
+    source = Path("tests/e2e/online_serving/test_qwen2_5_omni_expansion.py").read_text(encoding="utf-8")
+    text_test_marks = source.split("def test_text_to_text_001", maxsplit=1)[0].rsplit("@pytest.mark.slow", maxsplit=1)[
+        1
+    ]
+    assert '@hardware_test(res={"cuda": "L4", "rocm": "MI325"}, num_cards=2)' in text_test_marks
+
+
+@pytest.mark.parametrize(
+    ("pytest_status", "tests", "skipped", "timeout_status", "expected_status"),
+    [
+        (0, 8, 0, None, 0),
+        (0, 8, 1, None, 5),
+        (0, 0, 0, None, 5),
+        (1, 8, 0, None, 1),
+        (0, 8, 0, 124, 124),
+    ],
+    ids=("pass", "skipped", "zero-tests", "pytest-failure", "timeout"),
+)
+def test_qwen25_omni_merge_executes_junit_guard_before_exit(
+    tmp_path: Path,
+    pytest_status: int,
+    tests: int,
+    skipped: int,
+    timeout_status: int | None,
+    expected_status: int,
+) -> None:
+    _assert_nightly_junit_guard(
+        tmp_path,
+        pipeline_path=AMD_MERGE_PIPELINE,
+        step_label="Omni Model Test Qwen2-5-Omni",
+        command_fragment="pytest -s -v -ra",
+        expected_message="Expected exactly eight executed Qwen2.5-Omni MERGE tests",
+        artifact_env="ROCM_QWEN25_OMNI_MERGE_ARTIFACT_DIR",
+        job_id_prefix="qwen25-omni-merge-guard",
+        pytest_status=pytest_status,
+        tests=tests,
+        skipped=skipped,
+        timeout_status=timeout_status,
+        expected_status=expected_status,
+    )
+
+
 def test_wan22_function_has_separate_nonblocking_card_jobs() -> None:
     one = _find_step("Wan2.2 Function 1 GPU", AMD_NIGHTLY_PIPELINE)
     two = _find_step("Wan2.2 Function 2 GPU", AMD_NIGHTLY_PIPELINE)
