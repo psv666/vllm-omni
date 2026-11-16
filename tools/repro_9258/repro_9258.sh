@@ -53,17 +53,35 @@ done
 root_input="${REPRO_ROOT:-$HOME/issue9258-a100}"
 mkdir -p -- "$root_input"
 repro_root="$(cd -- "$root_input" && pwd -P)"
-mkdir -p -- "$repro_root/repos" "$repro_root/runs" "${HF_CACHE_DIR:-$repro_root/hf-cache}"
+mkdir -p -- "$repro_root/snapshots" "$repro_root/runs" "${HF_CACHE_DIR:-$repro_root/hf-cache}"
 cache_dir="$(cd -- "${HF_CACHE_DIR:-$repro_root/hf-cache}" && pwd -P)"
-source_dir="$repro_root/repos/$revision"
+source_dir="$repro_root/snapshots/$revision"
 run_dir="$(mktemp -d "$repro_root/runs/$profile-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 printf 'Profile: %s\nCommit: %s\nPhysical GPUs: %s\nSource: %s\nEvidence: %s\n' \
   "$profile" "$revision" "$gpu_ids" "$source_dir" "$run_dir"
 
 if [[ ! -e "$source_dir" ]]; then
-  git clone --filter=blob:none --no-checkout "$source_repo" "$source_dir"
-  git -C "$source_dir" fetch origin "$revision"
-  git -C "$source_dir" -c core.autocrlf=false checkout --detach "$revision"
+  # Publish only a completed checkout. An interrupted preparation leaves no
+  # final snapshot for a later run to mistake for a usable source tree.
+  staging_dir="$(mktemp -d "$repro_root/snapshots/.$revision.XXXXXX")"
+  launcher_repo="$(git -C "$support_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$launcher_repo" ]] &&
+    ! git -C "$launcher_repo" config --get-regexp '^remote\..*\.promisor$' >/dev/null &&
+    ! git -C "$launcher_repo" config --get extensions.partialClone >/dev/null &&
+    git -C "$launcher_repo" cat-file -e "$revision^{commit}" 2>/dev/null; then
+    echo 'Preparing pinned source from the existing local repository...'
+    # A local clone owns its object files (hardlinked when possible); avoid
+    # --shared, whose host-only alternates path would break inside Docker.
+    git clone --local --no-checkout "$launcher_repo" "$staging_dir"
+    git -C "$staging_dir" remote set-url origin "$source_repo"
+  else
+    echo 'Fetching the pinned source in one shallow fetch...'
+    git init "$staging_dir"
+    git -C "$staging_dir" remote add origin "$source_repo"
+    git -C "$staging_dir" -c gc.auto=0 fetch --depth=1 --no-tags --progress origin "$revision"
+  fi
+  git -C "$staging_dir" -c core.autocrlf=false checkout --detach "$revision"
+  mv -T -- "$staging_dir" "$source_dir"
 fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$revision" ]] || { echo 'Checkout SHA mismatch.' >&2; exit 2; }
 git -C "$source_dir" diff --quiet || { echo 'Checkout has tracked changes; use another REPRO_ROOT.' >&2; exit 2; }

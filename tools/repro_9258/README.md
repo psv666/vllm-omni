@@ -46,6 +46,11 @@ REPRO_ROOT=/data/issue9258-a100 \
 GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
 ```
 
+源码存放在 `snapshots/<提交>/`。脚本优先从当前完整 Git 仓库准备独立快照，复用已有本地对象；
+当前仓库缺少该提交或使用 partial clone 时，改为从远端浅拉取固定提交及其文件。
+源码检出完成后才会发布快照目录；中断后重跑会重新准备尚未完成的快照。
+旧脚本在 `repos/` 中留下的目录不会参与新版的源码准备，`hf-cache/` 仍继续复用。
+
 源码默认从 `psv666/vllm-omni` 获取。若服务器使用 SSH Git 地址，可设置：
 
 ```bash
