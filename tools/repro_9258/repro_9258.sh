@@ -5,7 +5,8 @@
 # Usage: GPUS=0,1,2 bash repro_9258.sh ci
 #        GPUS=0,1,2 bash repro_9258.sh original
 # Options: REPRO_ROOT, REPRO_REPO_URL, HF_CACHE_DIR, PREFETCH=0|1,
-# CAPTURE_STDERR=0|1. The README also shows invocation from the repo root.
+# CAPTURE_STDERR=0|1, QWEN3_OMNI_MODEL_DIR, JUDGE_MODEL_DIR.
+# The README also shows invocation from the repo root.
 set -Eeuo pipefail
 
 profile="${1:-ci}"
@@ -39,6 +40,16 @@ support_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 for support_file in inside_container.sh repro_stderr.py; do
   [[ -f "$support_dir/$support_file" ]] || { echo "Missing $support_file" >&2; exit 2; }
 done
+# Ordinary local model folders are separate from the Hugging Face cache mount.
+for model_var in QWEN3_OMNI_MODEL_DIR JUDGE_MODEL_DIR; do
+  model_value="${!model_var:-}"
+  if [[ -n "$model_value" ]]; then
+    [[ -d "$model_value" ]] || { echo "$model_var is not a directory: $model_value" >&2; exit 2; }
+    model_value="$(cd -- "$model_value" && pwd -P)"
+    [[ -f "$model_value/config.json" ]] || { echo "$model_var has no config.json: $model_value" >&2; exit 2; }
+    printf -v "$model_var" '%s' "$model_value"
+  fi
+done
 root_input="${REPRO_ROOT:-$HOME/issue9258-a100}"
 mkdir -p -- "$root_input"
 repro_root="$(cd -- "$root_input" && pwd -P)"
@@ -61,6 +72,9 @@ git -C "$source_dir" diff --cached --quiet || { echo 'Checkout has staged change
 printf '%s\n' "$revision" > "$run_dir/omni-commit.txt"
 printf '%s\n' "$image" > "$run_dir/image-reference.txt"
 printf '%s\n' "$gpu_ids" > "$run_dir/physical-gpus.txt"
+printf 'QWEN3_OMNI_MODEL_DIR=%s\nJUDGE_MODEL_DIR=%s\n' \
+  "${QWEN3_OMNI_MODEL_DIR:-Hugging Face model ID}" "${JUDGE_MODEL_DIR:-Hugging Face model ID}" \
+  > "$run_dir/local-model-host-paths.txt"
 nvidia-smi -q > "$run_dir/host-nvidia-smi.txt"
 nvidia-smi topo -m > "$run_dir/host-gpu-topology.txt"
 docker version > "$run_dir/docker-version.txt"
@@ -82,6 +96,14 @@ docker_args=(run --rm --init --gpus "\"device=$gpu_ids\"" --ipc=host --network=h
   -e VLLM_WORKER_MULTIPROC_METHOD=spawn
   -e "EXPECTED_OMNI_SHA=$revision" -e "REPRO_PROFILE=$profile"
   -e "PREFETCH=${PREFETCH:-1}" -e "CAPTURE_STDERR=${CAPTURE_STDERR:-1}")
+if [[ -n "${QWEN3_OMNI_MODEL_DIR:-}" ]]; then
+  docker_args+=(--mount "type=bind,src=$QWEN3_OMNI_MODEL_DIR,dst=/local-models/qwen3-omni,readonly"
+    -e QWEN3_OMNI_MODEL_DIR=/local-models/qwen3-omni)
+fi
+if [[ -n "${JUDGE_MODEL_DIR:-}" ]]; then
+  docker_args+=(--mount "type=bind,src=$JUDGE_MODEL_DIR,dst=/local-models/judge,readonly"
+    -e JUDGE_MODEL_DIR=/local-models/judge)
+fi
 # Forward optional network/auth settings by name; never dump token values.
 for env_name in HF_ENDPOINT HF_TOKEN VLLM_LOGGING_LEVEL HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
   if [[ -n "${!env_name:-}" ]]; then docker_args+=(-e "$env_name"); fi

@@ -65,7 +65,45 @@ PY
 trap collect_outputs EXIT
 
 [[ "$(git rev-parse HEAD)" == "$EXPECTED_OMNI_SHA" ]] || { echo 'Unexpected mounted checkout.' >&2; exit 2; }
-cp "$config_path" /repro/env/test-config.json
+cp "$config_path" /repro/env/original-test-config.json
+# Produce a per-run configuration so the pinned source checkout stays pristine.
+python - "$config_path" /repro/env/test-config.json <<'PY'
+import hashlib
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+config = json.loads(source.read_text())
+local_models = {}
+for variable, role in [('QWEN3_OMNI_MODEL_DIR', 'server_params'), ('JUDGE_MODEL_DIR', 'judge_server_params')]:
+    value = os.environ.get(variable)
+    if not value:
+        continue
+    directory = Path(value).resolve(strict=True)
+    model_config = directory / 'config.json'
+    assert model_config.is_file(), f'{variable}: missing {model_config}'
+    weights = list(directory.glob('*.safetensors')) + list(directory.glob('pytorch_model*.bin'))
+    assert weights, f'{variable}: no model weights found in {directory}'
+    assert all(path.is_file() for path in weights), (
+        f'{variable}: unreadable weight symlink in {directory}; '
+        'for a Hugging Face cache snapshot, use HF_CACHE_DIR with its complete hub directory'
+    )
+    for case in config:
+        case[role]['model'] = str(directory)
+    local_models[variable] = {'container_path': str(directory),
+                              'config_sha256': hashlib.sha256(model_config.read_bytes()).hexdigest()}
+if local_models:
+    destination.write_text(json.dumps(config, indent=2) + '\n')
+else:
+    shutil.copyfile(source, destination)
+(destination.parent / 'local-models.json').write_text(json.dumps(local_models, indent=2) + '\n')
+print('Local model overrides: ' + json.dumps(local_models))
+PY
+config_path=/repro/env/test-config.json
+export REPRO_CONFIG_PATH="$config_path"
 cp vllm_omni/deploy/qwen3_omni*.yaml /repro/env/
 cp docker/Dockerfile.ci /repro/env/Dockerfile.ci
 python -m pip freeze > /repro/env/pip-freeze.txt
@@ -114,6 +152,10 @@ assets = {'models': [], 'datasets': []}
 model_ids = sorted({p['model'] for case in config
                     for p in (case['server_params'], case['judge_server_params'])})
 for model_id in model_ids:
+    if Path(model_id).is_dir():
+        print(f'Using mounted local model: {model_id}', flush=True)
+        assets['models'].append({'local_path': model_id})
+        continue
     info = api.model_info(model_id)
     print(f'Downloading {model_id} at {info.sha}', flush=True)
     snapshot_download(repo_id=model_id, revision=info.sha)

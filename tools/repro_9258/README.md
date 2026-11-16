@@ -56,6 +56,36 @@ GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
 `HF_CACHE_DIR` 可指定已有 Hugging Face 缓存目录。`HF_ENDPOINT`、`HF_TOKEN`、代理设置和
 `VLLM_LOGGING_LEVEL` 会在设置时传入容器。脚本不会主动打印 token 值。
 
+## 指定已有模型路径
+
+普通模型目录可以通过下面两个参数分别指定，路径替换成服务器上的实际位置：
+
+```bash
+export REPRO_ROOT=/home/pengsiv/issue9258-a100
+export QWEN3_OMNI_MODEL_DIR=/home/pengsiv/models/Qwen3-Omni-30B-A3B-Instruct
+export JUDGE_MODEL_DIR=/home/pengsiv/models/Qwen2.5-7B-Instruct
+
+GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
+# 上一组结束后，使用同一组模型目录运行旧版。
+GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh original
+```
+
+这两个目录应各自包含 `config.json`、tokenizer/processor 配置及完整权重文件。
+脚本会只读挂载到容器，生成本次运行的测试配置，并直接使用本地权重。
+两个参数可以独立设置；未指定的模型仍按原 Hugging Face ID 加载。
+数据集仍按原测试配置准备。比较两个代码版本时，应使用相同的模型文件。
+
+若已有的是 Hugging Face 缓存，应把 `HF_CACHE_DIR` 设置为包含 `hub/` 的缓存根目录，例如：
+
+```bash
+# 该目录中应有 hub/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/ 等目录。
+HF_CACHE_DIR=/home/pengsiv/huggingface \
+GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
+```
+
+缓存的 `snapshots/<revision>/` 通常通过符号链接引用同级 `blobs/` 中的权重；这种布局需要挂载完整缓存。
+本次配置保存在 `env/test-config.json`，原配置保存在 `env/original-test-config.json`。
+
 默认先下载模型与数据集文件；该过程不会启动 Omni 引擎或创建 duplex session。
 每次测试都会创建新容器并启动新服务。缓存已准备好时可设置 `PREFETCH=0`。
 
