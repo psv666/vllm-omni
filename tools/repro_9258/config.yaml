@@ -1,0 +1,29 @@
+# 修改本机路径后，直接运行 bash tools/repro_9258/repro_9258.sh。
+profile: ci
+
+paths:
+  repro_root: /home/pengsiv/vllm-omni-9258-repro/issues/issue9258-a100
+  # 留空时使用上面 repro_root 下的 hf-cache，两种模式共用缓存。
+  hf_cache_dir: ""
+  # 填写真实目录；离线模式下这三个目录都必须配置。
+  qwen3_omni_model_dir: ""
+  judge_model_dir: ""
+  duplex_eval_dataset_dir: ""
+
+profiles:
+  ci:
+    gpus: [0, 1, 2]
+  original:
+    gpus: [3, 4, 5]
+    repro_root: /home/pengsiv/vllm-omni-9258-repro/issues/issue9258-a100-original
+
+# true：只使用本地源码、镜像、模型和数据；缺失时直接报错。
+offline: true
+# true：测试前先检查本地模型和数据是否可读，不启动模型服务。
+prefetch: true
+capture_stderr: true
+log_level: INFO
+
+# 仅在线模式缺少源码时使用。
+source_repo: https://github.com/psv666/vllm-omni.git
+hf_endpoint: https://huggingface.co

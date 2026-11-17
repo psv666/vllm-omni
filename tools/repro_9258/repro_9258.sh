@@ -1,16 +1,68 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-# Run on the Linux A100 host, from the directory containing all three files.
-# Usage: GPUS=0,1,2 bash repro_9258.sh ci
-#        GPUS=0,1,2 bash repro_9258.sh original
-# Options: REPRO_ROOT, REPRO_REPO_URL, HF_CACHE_DIR, PREFETCH=0|1,
-# CAPTURE_STDERR=0|1, QWEN3_OMNI_MODEL_DIR, JUDGE_MODEL_DIR,
-# DUPLEX_EVAL_DATASET_DIR, HF_HUB_OFFLINE=1, HF_DATASETS_OFFLINE=1.
-# The README also shows invocation from the repo root.
+# Edit config.yaml, then run: bash tools/repro_9258/repro_9258.sh [ci|original]
+# Optional: --config FILE, --check-config. Configuration comes from YAML.
 set -Eeuo pipefail
 
-profile="${1:-ci}"
+support_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+config_file="$support_dir/config.yaml"
+profile_override=""
+check_config=0
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    ci|original)
+      [[ -z "$profile_override" ]] || { echo 'Select one profile.' >&2; exit 2; }
+      profile_override=$1; shift ;;
+    --config)
+      [[ "$#" -ge 2 ]] || { echo '--config requires a YAML path.' >&2; exit 2; }
+      config_file=$2; shift 2 ;;
+    --check-config) check_config=1; shift ;;
+    -h|--help)
+      echo "Usage: $0 [ci|original] [--config FILE] [--check-config]"; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ -f "$config_file" ]] || { echo "Missing YAML configuration: $config_file" >&2; exit 2; }
+config_dir="$(cd -- "$(dirname -- "$config_file")" && pwd -P)"
+config_file="$config_dir/$(basename -- "$config_file")"
+
+read_yaml() {
+  local candidate parser_image
+  local parser_args=(--base-dir "$config_dir" --home-dir "$HOME")
+  if [[ -n "$profile_override" ]]; then parser_args+=(--profile "$profile_override"); fi
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys, yaml; assert sys.version_info >= (3, 8)' >/dev/null 2>&1; then
+      "$candidate" "$support_dir/load_config.py" "$config_file" "${parser_args[@]}"
+      return
+    fi
+  done
+  # The cached CI images already contain PyYAML; no host package installation
+  # or network access is needed to read the configuration.
+  command -v docker >/dev/null || { echo 'YAML needs local Python/PyYAML or a cached CI image.' >&2; return 2; }
+  for parser_image in \
+    public.ecr.aws/q9t5s3a7/vllm-ci-test-repo@sha256:dc76851796905fa258a99edb0a330a7bbe2f7e74c2639888982b590beb35a830 \
+    public.ecr.aws/q9t5s3a7/vllm-ci-test-repo@sha256:34f3bf8015bae3450de321d72e7de72ab4366ef496172ca3d65ce41e95de0632; do
+    if docker image inspect "$parser_image" >/dev/null 2>&1; then
+      docker run --rm --network=none --entrypoint python \
+        --mount "type=bind,src=$support_dir,dst=/repro-support,readonly" \
+        --mount "type=bind,src=$config_file,dst=/repro-config.yaml,readonly" \
+        "$parser_image" /repro-support/load_config.py /repro-config.yaml "${parser_args[@]}"
+      return
+    fi
+  done
+  echo 'Reading YAML requires local Python/PyYAML or one already cached CI image; no download was attempted.' >&2
+  return 2
+}
+config_env="$(mktemp)"
+if ! read_yaml > "$config_env"; then rm -- "$config_env"; exit 2; fi
+while IFS= read -r -d '' name && IFS= read -r -d '' value; do
+  export "$name=$value"
+done < "$config_env"
+rm -- "$config_env"
+if [[ "$check_config" -eq 1 ]]; then printf '%s\n' "$REPRO_SETTINGS_JSON"; exit 0; fi
+profile=$REPRO_PROFILE
+printf 'Configuration: %s\n' "$config_file"
 case "$profile" in
   ci)
     revision=22721f0acdfe129ba2a8937057dd321efecf8aa1
@@ -37,7 +89,6 @@ fi
 for command_name in git docker nvidia-smi tar; do
   command -v "$command_name" >/dev/null || { echo "Missing: $command_name" >&2; exit 2; }
 done
-support_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 for support_file in inside_container.sh repro_stderr.py; do
   [[ -f "$support_dir/$support_file" ]] || { echo "Missing $support_file" >&2; exit 2; }
 done
@@ -80,6 +131,10 @@ if [[ ! -e "$source_dir" ]]; then
     git clone --local --no-checkout "$launcher_repo" "$staging_dir"
     git -C "$staging_dir" remote set-url origin "$source_repo"
   else
+    if [[ "$REPRO_OFFLINE" == 1 ]]; then
+      echo "Pinned source $revision is unavailable locally and offline is true; use a complete launcher checkout or set offline: false in YAML." >&2
+      exit 2
+    fi
     echo 'Fetching the pinned source in one shallow fetch...'
     git init "$staging_dir"
     git -C "$staging_dir" remote add origin "$source_repo"
@@ -93,6 +148,7 @@ git -C "$source_dir" diff --quiet || { echo 'Checkout has tracked changes; use a
 git -C "$source_dir" diff --cached --quiet || { echo 'Checkout has staged changes; use another REPRO_ROOT.' >&2; exit 2; }
 
 printf '%s\n' "$revision" > "$run_dir/omni-commit.txt"
+printf '%s\n' "$REPRO_SETTINGS_JSON" > "$run_dir/run-config.json"
 printf '%s\n' "$image" > "$run_dir/image-reference.txt"
 printf '%s\n' "$gpu_ids" > "$run_dir/physical-gpus.txt"
 printf 'QWEN3_OMNI_MODEL_DIR=%s\nJUDGE_MODEL_DIR=%s\n' \
@@ -105,6 +161,10 @@ docker version > "$run_dir/docker-version.txt"
 if docker image inspect "$image" >/dev/null 2>&1; then
   printf 'Using cached CI image: %s\n' "$image"
 else
+  if [[ "$REPRO_OFFLINE" == 1 ]]; then
+    echo "CI image is not cached and offline is true: $image" >&2
+    exit 2
+  fi
   docker pull "$image"
 fi
 docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$image" > "$run_dir/image-digests.txt"

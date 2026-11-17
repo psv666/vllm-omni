@@ -1,29 +1,18 @@
 # Issue #9258: A100 reproduction
 
 这组脚本用于在 A100 上复测 [#9258](https://github.com/vllm-project/vllm-omni/issues/9258)
-报告的首次 duplex session 打开期间 WebSocket 关闭问题。脚本从 Git 获取源码，使用与固定提交
-对应的 CI 镜像启动全新服务，并保存请求结果和服务端日志。
+报告的首次 duplex session 打开期间 WebSocket 关闭问题。运行所需设置集中在
+[config.yaml](config.yaml)，修改本机路径后直接运行，无需逐项 export。
 
 | 模式 | vLLM-Omni 提交 | vLLM | 工作负载 |
 | --- | --- | --- | --- |
 | `ci` | `22721f0acdfe129ba2a8937057dd321efecf8aa1` | 0.33.0 | PR_correction，120 条，并发 8 |
 | `original` | `aa3fd1d9b7f5c7191dec11975ac0aa7c4c4a18c5` | 0.32.0 | PR_correction 3 条、RTD_counting 2 条，并发 1 |
 
-`ci` 使用的版本在 H100 [nightly #19773](https://buildkite.com/vllm/vllm-omni/builds/19773#01a1deaa-a6be-4a2d-b3f5-b3889d75903b)
-中获得 `1 passed`、120 个请求成功、0 个请求失败。这里尚未取得 A100 执行结果。
+`ci` 的固定版本在 H100 [nightly #19773](https://buildkite.com/vllm/vllm-omni/builds/19773#01a1deaa-a6be-4a2d-b3f5-b3889d75903b)
+中获得 `1 passed`、120 个请求成功、0 个请求失败。A100 模型测试结果仍待收集。
 
-## 环境要求
-
-- Linux x86_64，Bash、Git、Docker、NVIDIA Container Toolkit、`nvidia-smi`、`tar`。
-- 三张空闲的 A100 80GB。容器逻辑 GPU 0 跑 Thinker，GPU 1 跑 Talker/Code2Wav，GPU 2 跑评测模型。
-- 准备源码和首次获取缺失的 CI 镜像时需要相应网络；镜像已有缓存时直接复用。
-- 模型和数据集可使用本地目录；选择在线加载时需要能访问对应 Hugging Face 资源。
-- 建议预留约 200–300GB 磁盘，用于两个镜像、共享模型缓存和输出。
-
-镜像中的 CUDA 版本为 13。脚本会在模型测试前检查宿主驱动可用性、GPU 数量、vLLM 版本及编译扩展。
-如果预检失败，应先处理环境；这类失败本身不能算复现 #9258。
-
-## 通过 Git 获取并运行
+## 获取和配置
 
 在 A100 服务器上执行：
 
@@ -31,134 +20,108 @@
 git clone --single-branch --branch codex/repro-9258-a100 \
   https://github.com/psv666/vllm-omni.git vllm-omni-9258-repro
 cd vllm-omni-9258-repro
-
-# 先确认选中的三张物理卡空闲；根据实际情况修改 GPUS。
-nvidia-smi
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-
-# 等上一组结束，再运行旧版本。
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh original
+nano tools/repro_9258/config.yaml
 ```
 
-脚本默认把源码快照、模型缓存和输出放在 `~/issue9258-a100/`。指定其他磁盘时，两组使用同一个目录：
+已有仓库时先 `git pull --ff-only`。配置文件中需要填写的主要内容是：
+
+```yaml
+paths:
+  repro_root: /home/pengsiv/vllm-omni-9258-repro/issues/issue9258-a100
+  hf_cache_dir: ""
+  qwen3_omni_model_dir: /home/pengsiv/models/Qwen3-Omni-30B-A3B-Instruct
+  judge_model_dir: /home/pengsiv/models/Qwen2.5-7B-Instruct
+  duplex_eval_dataset_dir: /home/pengsiv/datasets/Omni-DuplexEval
+
+profiles:
+  ci:
+    gpus: [0, 1, 2]
+  original:
+    gpus: [3, 4, 5]
+    repro_root: /home/pengsiv/vllm-omni-9258-repro/issues/issue9258-a100-original
+```
+
+示例模型和数据路径需要替换成实际目录。三个输入目录在离线模式下都必须填写。
+路径可以是绝对路径或相对于 YAML 文件所在目录的路径；`~/` 使用宿主用户的家目录。
+`hf_cache_dir` 留空时，两种模式共用 `paths.repro_root/hf-cache`。
+各模式可设置独立的 `repro_root`，以分开源码快照和实验日志。
+
+其余设置也在同一 YAML 中：
+
+- `profile`：不传命令行模式时运行的默认模式。
+- `offline`：默认 `true`，禁止脚本自动获取缺失源码和镜像，并关闭 Hugging Face 在线访问。
+- `prefetch`：默认 `true`，启动模型服务前先检查本地输入是否可读。
+- `capture_stderr`：默认 `true`，保存测试 fixture 内部消费的服务端 stderr。
+- `log_level`：默认 `INFO`；需要更详细的服务端输出时可设为 `DEBUG`。
+- `source_repo`、`hf_endpoint`：在线模式使用的 Git 仓库和 Hugging Face 地址。
+
+YAML 中的设置优先于终端中先前 export 的同名变量。
+离线模式遇到未填写的输入、缺少源码或镜像时会报错，不会自动联网补齐。
+已有镜像始终直接复用。只有显式设为 `offline: false`，才允许获取缺失的资源。
+
+## 运行
 
 ```bash
-REPRO_ROOT=/data/issue9258-a100 \
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
+# 只检查并打印所选模式的配置，不运行 GPU 测试。
+bash tools/repro_9258/repro_9258.sh --check-config
+
+# 使用 YAML 中的默认 profile。
+bash tools/repro_9258/repro_9258.sh
+
+# 显式选择模式；GPU 和目录仍从同一个 YAML 读取。
+bash tools/repro_9258/repro_9258.sh ci
+bash tools/repro_9258/repro_9258.sh original
 ```
 
-源码存放在 `snapshots/<提交>/`。脚本优先从当前完整 Git 仓库准备独立快照，复用已有本地对象；
-当前仓库缺少该提交或使用 partial clone 时，改为从远端浅拉取固定提交及其文件。
-源码检出完成后才会发布快照目录；中断后重跑会重新准备尚未完成的快照。
-旧脚本在 `repos/` 中留下的目录不会参与新版的源码准备，`hf-cache/` 仍继续复用。
+另存配置文件时，可以使用 `--config /path/to/another.yaml`。
+运行需要 Linux x86_64、Bash、Git、Docker、NVIDIA Container Toolkit、`nvidia-smi` 和 `tar`。
+每组使用三张 A100 80GB：容器逻辑 GPU 0 跑 Thinker，GPU 1 跑 Talker/Code2Wav，GPU 2 跑评测模型。
 
-源码默认从 `psv666/vllm-omni` 获取。若服务器使用 SSH Git 地址，可设置：
+配置解析优先使用宿主已有的 Python 3.8+ 和 PyYAML；未安装 PyYAML 时，自动使用已经缓存的
+CI 镜像解析，解析容器的网络关闭，不要求额外安装宿主依赖。
+至少需要这两种解析环境中的一种。CI 镜像和源码提交固定在脚本中。
 
-```bash
-REPRO_REPO_URL=git@github.com:psv666/vllm-omni.git \
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-```
+两个模式可以在不同终端运行，分别使用 YAML 中配置的 GPU 和目录。
+并行运行仍会共享 CPU、内存和磁盘，冷启动超时需要再单独运行确认。
 
-`HF_CACHE_DIR` 可指定已有 Hugging Face 缓存目录。`HF_ENDPOINT`、`HF_TOKEN`、代理设置和
-`VLLM_LOGGING_LEVEL` 会在设置时传入容器。脚本不会主动打印 token 值。
+## 本地模型和数据
 
-## 指定已有模型路径
+模型目录应包含 `config.json`、完整权重及 tokenizer/processor 配置。
+脚本将模型目录只读挂载进容器，并生成本次运行的测试配置。
+已有 Hugging Face 缓存时，`hf_cache_dir` 应指向包含 `hub/` 的缓存根目录。
 
-普通模型目录可以通过下面两个参数分别指定，路径替换成服务器上的实际位置：
+数据集目录应保留原始 `README.md` 分片配置和完整的 `data/*.parquet` 文件。
+`ci` 使用 PR_correction，`original` 还使用 RTD_counting。
+数据集同样只读挂载，测试配置的 `dataset_path` 自动改为本地路径，不查询在线数据集元数据。
+CI 对照使用的数据集 revision 为 `de63329f76daa5e0c604363ef6a2c383dfba45f6`。
+两组实验应使用同一份模型和数据。
 
-```bash
-export REPRO_ROOT=/home/pengsiv/issue9258-a100
-export QWEN3_OMNI_MODEL_DIR=/home/pengsiv/models/Qwen3-Omni-30B-A3B-Instruct
-export JUDGE_MODEL_DIR=/home/pengsiv/models/Qwen2.5-7B-Instruct
+源码存放在所选 `repro_root/snapshots/<提交>/`。脚本优先从当前完整 Git 仓库准备独立快照；
+只有在线模式才会在本地缺少提交时浅拉取固定源码。完成检出后才会发布快照目录，以支持中断重跑。
+旧脚本的 `repos/` 不参与新版源码准备，`hf-cache/` 仍可继续复用。
 
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-# 上一组结束后，使用同一组模型目录运行旧版。
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh original
-```
+## 日志和诊断包
 
-这两个目录应各自包含 `config.json`、tokenizer/processor 配置及完整权重文件。
-脚本会只读挂载到容器，生成本次运行的测试配置，并直接使用本地权重。
-两个参数可以独立设置；未指定的模型仍按原 Hugging Face ID 加载。
-数据集仍按原测试配置准备。比较两个代码版本时，应使用相同的模型文件。
+每组输出位于所选 `repro_root/runs/<模式>-<UTC时间>-<随机后缀>/`。
+脚本会打印 `Evidence:` 绝对路径；容器结束后会打印 `Evidence archive:` 路径。
 
-若已有的是 Hugging Face 缓存，应把 `HF_CACHE_DIR` 设置为包含 `hub/` 的缓存根目录，例如：
-
-```bash
-# 该目录中应有 hub/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/ 等目录。
-HF_CACHE_DIR=/home/pengsiv/huggingface \
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-```
-
-缓存的 `snapshots/<revision>/` 通常通过符号链接引用同级 `blobs/` 中的权重；这种布局需要挂载完整缓存。
-本次配置保存在 `env/test-config.json`，原配置保存在 `env/original-test-config.json`。
-
-## 指定已有数据集路径
-
-用 `DUPLEX_EVAL_DATASET_DIR` 指定提前准备好的原始 Parquet 数据集目录：
-
-```bash
-export DUPLEX_EVAL_DATASET_DIR=/home/pengsiv/datasets/Omni-DuplexEval
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-```
-
-目录保留数据集的 `README.md` 分片配置和 `data/*.parquet` 文件，包括对应测试需要的完整分片。
-`ci` 使用 PR_correction；`original` 使用 PR_correction 和 RTD_counting。
-目录会只读挂载进容器，本次测试的 `dataset_path` 会自动指向本地目录。
-预检查会验证本地数据可读，跳过在线数据集元数据查询。
-
-两个本地模型目录和数据集都已设置时，可以显式关闭 Hugging Face 在线访问：
-
-```bash
-export HF_HUB_OFFLINE=1
-export HF_DATASETS_OFFLINE=1
-GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
-```
-
-本地数据集目录和文件清单会保存在 `env/local-dataset.json`。
-两组实验应使用同一份准备好的数据；CI 对照的数据集原始 revision 为
-`de63329f76daa5e0c604363ef6a2c383dfba45f6`。
-
-默认先下载模型与数据集文件；该过程不会启动 Omni 引擎或创建 duplex session。
-指定本地模型和数据集时改为检查本地文件。每次测试都会创建新容器并启动新服务。
-缓存已准备好时可设置 `PREFETCH=0`。
-
-## 测试和日志
-
-测试执行原 JSON 配置，并保留 `-m "full_model and H100 and B200 and cuda and omni and cards_3"`。
-H100/B200 是用例的收集标签；这段实现只检查 CUDA 卡数，不据此排除 A100。
-结果 JSON 会独立记录实际设备为 A100。
-
-默认加载 `repro_stderr.py`，将 fixture 原本在内部消费的服务端 stderr 同时保存到文件。
-该插件只增加诊断输出。需要关闭这一层采集时，设置 `CAPTURE_STDERR=0`。
-
-每组输出位于 `~/issue9258-a100/runs/<模式>-<时间>-<随机后缀>/`：
-
-- `summary.json`：请求成功、失败、超时、评测和 pytest 执行情况。
-- `pytest.log`、`pytest.xml`：测试日志和 JUnit 结果。
+- `evidence.tar.gz`：本次诊断包，包含以下日志和配置。
+- `run-config.json`：本次模式实际生效的 YAML 设置，HTTP 地址中的认证和查询参数已去除。
+- `pytest.log`、`pytest.xml`、`summary.json`：客户端错误、测试与请求结果。
 - `server-stderr/`：服务端 stderr 和对应启动命令。
+- `container.log`：容器初始化及测试输出。
+- `env/`、GPU 相关文本文件：环境、依赖、原始与实际测试配置、本地输入信息。
 - `results/`、`response-json/`：benchmark 结果及响应诊断 JSON。
-- `env/`：软件版本、GPU、依赖、测试配置、模型和数据集 revision。
-- `evidence.tar.gz`：本组诊断包；完整响应媒体保留在相应源码快照的 `tests/dfx/perf/results/`。
 
-即便 pytest 通过，也应查看 warmup 是否包含
-`Realtime WebSocket closed before the requested event arrived`。
-还应检查服务端的 `duplex open timed out`、异常栈及对应时间。
-脚本保留测试退出码，并额外拒绝将 skipped 或请求未全部成功的运行算作通过。
-
-如果停在 `Preparing dataset`，并出现 `Distant resource does not have an ETag`，
-这是 Hugging Face 数据集下载的元数据或网络路径问题，尚未进入模型服务测试。
-可以改用提前准备的 `DUPLEX_EVAL_DATASET_DIR`，直接读取本地文件；
-`PREFETCH=0` 只跳过预下载，正式测试仍需要读取数据集。
-实际 Hugging Face endpoint 和代理变量是否设置会记录在 `env/python-runtime.json`，不保存代理值。
-
-诊断包先写到运行目录外，再放入本次目录，避免归档文件本身触发目录改动警告。
-容器内准备或测试失败后正常退出也会打包，并保留原始失败退出码。
+模型权重和输入数据不会打包。完整响应媒体保留在源码快照的 `tests/dfx/perf/results/`。
+归档先在运行目录外生成，再移入本次目录。容器失败后正常退出也会打包，并保留实验退出码。
+即便 pytest 通过，也应查看 warmup 中的 `Realtime WebSocket closed before the requested event arrived`，
+以及服务端对应的 `duplex open timed out` 和异常栈。
 
 ## 验证范围
 
-这组脚本由 OpenAI Codex 辅助编写。本地已检查 Bash/Python 语法、stderr 采集及退出码保留；
-尚未在 A100 上执行。镜像固定到 digest，两个源码提交使用各自对应的运行时。
+脚本由 OpenAI Codex 辅助编写。本地验证覆盖配置解析、输入路径替换、离线准备分支、
+源码快照获取与中断恢复、stderr 采集、诊断包完整性及退出码。完整 A100 模型测试仍待收集。
 
-旧 issue 的版本记录存在差异：代码版本字段填写 `aa3fd1d9`，`collect_env` 则显示 `706f1dd12`。
-`original` 按前者复测。旧配置中的数据集也未固定 revision；脚本记录本次实际解析的模型与数据集
-revision，因此不能把这组运行称为对当时全部环境字节的精确复刻。
+旧 issue 的代码版本字段填写 `aa3fd1d9`，`collect_env` 则显示 `706f1dd12`；`original` 按前者复测。
+旧配置的数据集未固定 revision，因此本次运行不能称为对当时全部环境字节的精确复刻。
