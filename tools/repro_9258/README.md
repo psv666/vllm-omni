@@ -125,6 +125,8 @@ Hugging Face 可能打印 `Downloading data` 进度条，此处是在准备已�
 脚本会打印 `Evidence:` 绝对路径；容器结束后会打印 `Evidence archive:` 路径。
 
 - `evidence.tar.gz`：本次诊断包，包含以下日志和配置。
+- `diagnostics.txt`：可直接传出的纯文本诊断资料，包含完整容器日志、服务端 stderr、
+  启动命令、退出码、配置、环境和结构化结果。不会只截取错误行或日志末尾。
 - `run-config.json`：本次模式实际生效的 YAML 设置，HTTP 地址中的认证和查询参数已去除。
 - `pytest.log`、`pytest.xml`、`summary.json`：客户端错误、测试与请求结果。
 - `server-stderr/`：服务端 stderr 和对应启动命令。
@@ -134,6 +136,17 @@ Hugging Face 可能打印 `Downloading data` 进度条，此处是在准备已�
 
 模型权重和输入数据不会打包。完整响应媒体保留在源码快照的 `tests/dfx/perf/results/`。
 归档先在运行目录外生成，再移入本次目录。容器失败后正常退出也会打包，并保留实验退出码。
+只能传文本时，提供 `diagnostics.txt` 即可。它不包含模型、输入数据或响应媒体。
+已有实验完成后，可从原有日志生成这份文本，无需重跑测试：
+
+```bash
+bash tools/repro_9258/collect_text.sh /absolute/path/to/finished/run
+```
+
+将参数替换成该轮控制台 `Evidence:` 打印的目录。导出命令会打印 `Text diagnostics:` 路径；
+新启动的实验结束后会自动导出。`container.log` 已含 pytest 的控制台输出，文本中不再重复
+拼接 `pytest.log`。单独保存的日志文件仍在原位置。
+
 即便 pytest 通过，也应查看 warmup 中的 `Realtime WebSocket closed before the requested event arrived`，
 以及服务端对应的 `duplex open timed out` 和异常栈。
 

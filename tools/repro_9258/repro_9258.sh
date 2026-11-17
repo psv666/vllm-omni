@@ -89,7 +89,7 @@ fi
 for command_name in git docker nvidia-smi tar; do
   command -v "$command_name" >/dev/null || { echo "Missing: $command_name" >&2; exit 2; }
 done
-for support_file in inside_container.sh repro_stderr.py local_dataset.py; do
+for support_file in inside_container.sh repro_stderr.py local_dataset.py collect_text.sh; do
   [[ -f "$support_dir/$support_file" ]] || { echo "Missing $support_file" >&2; exit 2; }
 done
 # Ordinary local model folders are separate from the Hugging Face cache mount.
@@ -205,6 +205,9 @@ docker "${docker_args[@]}" "$image" /repro-support/inside_container.sh 2>&1 | te
 run_status=${PIPESTATUS[0]}
 set -e
 printf '%s\n' "$run_status" > "$run_dir/container-exit-code.txt"
+if ! bash "$support_dir/collect_text.sh" "$run_dir"; then
+  echo "Text collection failed; individual logs remain in $run_dir" >&2
+fi
 archive_tmp="$(mktemp "$repro_root/runs/.evidence-XXXXXX")"
 # gzip creates its output asynchronously. Keep it outside the archived folder
 # so creation cannot change that folder's metadata while tar is reading it.
