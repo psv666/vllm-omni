@@ -90,11 +90,30 @@ CI 镜像解析，解析容器的网络关闭，不要求额外安装宿主依�
 脚本将模型目录只读挂载进容器，并生成本次运行的测试配置。
 已有 Hugging Face 缓存时，`hf_cache_dir` 应指向包含 `hub/` 的缓存根目录。
 
-数据集目录应保留原始 `README.md` 分片配置和完整的 `data/*.parquet` 文件。
-`ci` 使用 PR_correction，`original` 还使用 RTD_counting。
-数据集同样只读挂载，测试配置的 `dataset_path` 自动改为本地路径，不查询在线数据集元数据。
-CI 对照使用的数据集 revision 为 `de63329f76daa5e0c604363ef6a2c383dfba45f6`。
-两组实验应使用同一份模型和数据。
+数据集若来自 Hugging Face 缓存，`duplex_eval_dataset_dir` 填包含 `blobs/`、
+`refs/`、`snapshots/` 等目录的仓库缓存根目录，例如：
+
+```yaml
+paths:
+  duplex_eval_dataset_dir: /data/models/hub/datasets--Hothan--Omni-DuplexEval
+```
+
+脚本只读挂载整个缓存，保留快照到 `blobs/`（或 `trees/`）的相对链接。
+不要只挂载含有目录外链接的 `snapshots/main/`。独立的本地目录也可使用，前提是
+所需 `data/<split>-00000-of-000NN.parquet` 分片完整，链接目标都在挂载目录内。
+已转换的 datasets Arrow 缓存目录不能作为这个设置的输入。
+
+`ci` 只选择固定 revision `de63329f76daa5e0c604363ef6a2c383dfba45f6` 的快照，
+缺失时报错，不下载，也不混入其他快照。`original` 原始配置未固定数据集 revision，
+按 `refs/main`、`snapshots/main/`、唯一快照的顺序选择；存在多个快照且无法确定时会报错。
+两组实验应使用同一份模型和数据；可在每次运行的 `env/local-dataset.json` 核对所选快照。
+
+脚本在 `env/local-dataset-view/README.md` 生成分片映射，直接引用选中快照已有的文件，
+不复制或改写数据文件。映射保留 `PR_correction` 等分片身份，避免缓存根目录被合并为
+通用 `train`。`ci` 使用 PR_correction，`original` 还使用 RTD_counting。
+启动模型前检查所需分片数量、链接和 Parquet 文件首尾。
+默认 `prefetch: true` 时，还通过原版数据加载器预读。
+Hugging Face 可能打印 `Downloading data` 进度条，此处是在准备已经挂载的本地文件。
 
 源码存放在所选 `repro_root/snapshots/<提交>/`。脚本优先从当前完整 Git 仓库准备独立快照；
 只有在线模式才会在本地缺少提交时浅拉取固定源码。完成检出后才会发布快照目录，以支持中断重跑。
@@ -121,7 +140,9 @@ CI 对照使用的数据集 revision 为 `de63329f76daa5e0c604363ef6a2c383dfba45
 ## 验证范围
 
 脚本由 OpenAI Codex 辅助编写。本地验证覆盖配置解析、输入路径替换、离线准备分支、
-源码快照获取与中断恢复、stderr 采集、诊断包完整性及退出码。完整 A100 模型测试仍待收集。
+源码快照获取与中断恢复、stderr 采集、诊断包完整性及退出码。数据集准备还使用
+`datasets==3.6.0` 和两种模式固定版本的数据加载器验证了真实 Parquet 的分片身份。
+完整 A100 模型测试仍待收集。
 
 旧 issue 的代码版本字段填写 `aa3fd1d9`，`collect_env` 则显示 `706f1dd12`；`original` 按前者复测。
 旧配置的数据集未固定 revision，因此本次运行不能称为对当时全部环境字节的精确复刻。

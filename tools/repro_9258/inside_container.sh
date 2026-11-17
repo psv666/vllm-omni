@@ -75,6 +75,9 @@ import shutil
 import sys
 from pathlib import Path
 
+sys.path.insert(0, '/repro-support')
+from local_dataset import prepare_dataset
+
 source, destination = map(Path, sys.argv[1:])
 config = json.loads(source.read_text())
 local_models = {}
@@ -98,18 +101,17 @@ for variable, role in [('QWEN3_OMNI_MODEL_DIR', 'server_params'), ('JUDGE_MODEL_
 local_dataset = os.environ.get('DUPLEX_EVAL_DATASET_DIR')
 dataset_metadata = {}
 if local_dataset:
-    directory = Path(local_dataset).resolve(strict=True)
-    assert directory.is_dir(), f'Local dataset directory is unavailable: {directory}'
-    files = sorted(directory.rglob('*.parquet'))
-    assert files and all(path.is_file() for path in files), (
-        f'Local dataset needs readable Parquet files: {directory}'
+    params_list = [params for case in config for params in case['benchmark_params']]
+    revisions = {params['dataset_path'].rsplit('@', 1)[1]
+                 for params in params_list if '@' in params['dataset_path']}
+    assert len(revisions) <= 1, f'Conflicting dataset revisions: {revisions}'
+    dataset_metadata = prepare_dataset(
+        Path(local_dataset), destination.parent / 'local-dataset-view',
+        revision=next(iter(revisions), None),
+        splits=[params['duplex_eval_split'] for params in params_list],
     )
-    for case in config:
-        for params in case['benchmark_params']:
-            params['dataset_path'] = str(directory)
-    dataset_metadata = {'container_path': str(directory),
-                        'parquet_files': [{'path': str(path.relative_to(directory)), 'bytes': path.stat().st_size}
-                                          for path in files]}
+    for params in params_list:
+        params['dataset_path'] = dataset_metadata['container_path']
 if local_models or local_dataset:
     destination.write_text(json.dumps(config, indent=2) + '\n')
 else:

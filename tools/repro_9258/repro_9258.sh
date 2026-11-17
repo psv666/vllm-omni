@@ -89,7 +89,7 @@ fi
 for command_name in git docker nvidia-smi tar; do
   command -v "$command_name" >/dev/null || { echo "Missing: $command_name" >&2; exit 2; }
 done
-for support_file in inside_container.sh repro_stderr.py; do
+for support_file in inside_container.sh repro_stderr.py local_dataset.py; do
   [[ -f "$support_dir/$support_file" ]] || { echo "Missing $support_file" >&2; exit 2; }
 done
 # Ordinary local model folders are separate from the Hugging Face cache mount.
