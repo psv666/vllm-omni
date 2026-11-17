@@ -7,7 +7,11 @@
 | 模式 | vLLM-Omni 提交 | vLLM | 工作负载 |
 | --- | --- | --- | --- |
 | `ci` | `22721f0acdfe129ba2a8937057dd321efecf8aa1` | 0.33.0 | PR_correction，120 条，并发 8 |
-| `original` | `aa3fd1d9b7f5c7191dec11975ac0aa7c4c4a18c5` | 0.32.0 | PR_correction 3 条、RTD_counting 2 条，并发 1 |
+| `original` | `aa3fd1d9b7f5c7191dec11975ac0aa7c4c4a18c5` | 0.32.0 | PR_correction，3 条，并发 1 |
+
+两种模式都只运行 `test_qwen3_omni_duplex_omni_duplex_eval.json` 中的 `PR_correction`
+参数子用例，与 issue 中失败的请求路径对应。`original` 保留 1 条 warmup；`ci` 保留 8 条
+warmup，并启动独立的评测模型。脚本生成本轮配置时筛选参数，不修改固定版本的源码配置。
 
 `ci` 的固定版本在 H100 [nightly #19773](https://buildkite.com/vllm/vllm-omni/builds/19773#01a1deaa-a6be-4a2d-b3f5-b3889d75903b)
 中获得 `1 passed`、120 个请求成功、0 个请求失败。A100 模型测试结果仍待收集。
@@ -110,7 +114,7 @@ paths:
 
 脚本在 `env/local-dataset-view/README.md` 生成分片映射，直接引用选中快照已有的文件，
 不复制或改写数据文件。映射保留 `PR_correction` 等分片身份，避免缓存根目录被合并为
-通用 `train`。`ci` 使用 PR_correction，`original` 还使用 RTD_counting。
+通用 `train`。两种模式都只需要 `PR_correction` 分片。
 启动模型前检查所需分片数量、链接和 Parquet 文件首尾。
 默认 `prefetch: true` 时，还通过原版数据加载器预读。
 Hugging Face 可能打印 `Downloading data` 进度条，此处是在准备已经挂载的本地文件。

@@ -71,7 +71,6 @@ python - "$config_path" /repro/env/test-config.json <<'PY'
 import hashlib
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -80,6 +79,15 @@ from local_dataset import prepare_dataset
 
 source, destination = map(Path, sys.argv[1:])
 config = json.loads(source.read_text())
+assert len(config) == 1 and config[0]['test_name'] == 'test_qwen3_omni_duplex_omni_duplex_eval', (
+    'Expected only the issue 9258 benchmark configuration.'
+)
+for case in config:
+    # The issue trace fails in PR_correction. The old JSON also contains an
+    # RTD_counting case; exclude it from this focused reproduction.
+    case['benchmark_params'] = [params for params in case['benchmark_params']
+                                if params.get('duplex_eval_split') == 'PR_correction']
+    assert len(case['benchmark_params']) == 1, 'Expected exactly one PR_correction benchmark.'
 local_models = {}
 for variable, role in [('QWEN3_OMNI_MODEL_DIR', 'server_params'), ('JUDGE_MODEL_DIR', 'judge_server_params')]:
     value = os.environ.get(variable)
@@ -112,10 +120,7 @@ if local_dataset:
     )
     for params in params_list:
         params['dataset_path'] = dataset_metadata['container_path']
-if local_models or local_dataset:
-    destination.write_text(json.dumps(config, indent=2) + '\n')
-else:
-    shutil.copyfile(source, destination)
+destination.write_text(json.dumps(config, indent=2) + '\n')
 (destination.parent / 'local-models.json').write_text(json.dumps(local_models, indent=2) + '\n')
 (destination.parent / 'local-dataset.json').write_text(json.dumps(dataset_metadata, indent=2) + '\n')
 print('Local model overrides: ' + json.dumps(local_models))
