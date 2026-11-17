@@ -89,9 +89,13 @@ fi
 for command_name in git docker nvidia-smi tar; do
   command -v "$command_name" >/dev/null || { echo "Missing: $command_name" >&2; exit 2; }
 done
-for support_file in inside_container.sh repro_stderr.py local_dataset.py collect_text.sh; do
+for support_file in inside_container.sh repro_stderr.py local_dataset.py collect_text.sh server_vad.py assets/silero_vad.onnx; do
   [[ -f "$support_dir/$support_file" ]] || { echo "Missing $support_file" >&2; exit 2; }
 done
+if [[ -n "$SERVER_VAD_MODEL_PATH" && ! -f "$SERVER_VAD_MODEL_PATH" ]]; then
+  echo "paths.server_vad_model_path is not a file: $SERVER_VAD_MODEL_PATH" >&2
+  exit 2
+fi
 # Ordinary local model folders are separate from the Hugging Face cache mount.
 for model_var in QWEN3_OMNI_MODEL_DIR JUDGE_MODEL_DIR; do
   model_value="${!model_var:-}"
@@ -195,6 +199,12 @@ fi
 if [[ -n "${DUPLEX_EVAL_DATASET_DIR:-}" ]]; then
   docker_args+=(--mount "type=bind,src=$DUPLEX_EVAL_DATASET_DIR,dst=/local-datasets/omni-duplex-eval,readonly"
     -e DUPLEX_EVAL_DATASET_DIR=/local-datasets/omni-duplex-eval)
+fi
+if [[ -n "$SERVER_VAD_MODEL_PATH" ]]; then
+  docker_args+=(--mount "type=bind,src=$SERVER_VAD_MODEL_PATH,dst=/local-models/silero_vad.onnx,readonly"
+    -e SERVER_VAD_MODEL_PATH=/local-models/silero_vad.onnx)
+else
+  docker_args+=(-e SERVER_VAD_MODEL_PATH=/repro-support/assets/silero_vad.onnx)
 fi
 # Forward optional network/auth settings by name; never dump token values.
 for env_name in HF_ENDPOINT HF_TOKEN HF_HUB_OFFLINE HF_DATASETS_OFFLINE VLLM_LOGGING_LEVEL HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do

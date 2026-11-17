@@ -50,6 +50,13 @@ profiles:
 `hf_cache_dir` 留空时，两种模式共用 `paths.repro_root/hf-cache`。
 各模式可设置独立的 `repro_root`，以分开源码快照和实验日志。
 
+语音活动检测使用随 Git 提供的固定 Silero ONNX 模型（约 2.3 MB），默认无需增加配置。
+两种模式都在生成的 deploy YAML 中显式设置 `duplex_session.server_vad_model_path`。
+启动 Qwen 前先校验文件、通过容器内 ONNX Runtime 加载并在 CPU 上运行一帧检测；
+失败则立即结束，不进入完整 benchmark。此检查不创建 Qwen 引擎或 duplex session。
+已有同一校验值的本地模型时，可选填写 `paths.server_vad_model_path` 覆盖；省略或留空使用
+随附模型。来源、校验值与许可见 [assets/README.md](assets/README.md)。
+
 其余设置也在同一 YAML 中：
 
 - `profile`：不传命令行模式时运行的默认模式。
@@ -159,6 +166,7 @@ bash tools/repro_9258/collect_text.sh /absolute/path/to/finished/run
 脚本由 OpenAI Codex 辅助编写。本地验证覆盖配置解析、输入路径替换、离线准备分支、
 源码快照获取与中断恢复、stderr 采集、诊断包完整性及退出码。数据集准备还使用
 `datasets==3.6.0` 和两种模式固定版本的数据加载器验证了真实 Parquet 的分片身份。
+Silero 预检使用随附的真实模型与两种固定版本的 VAD 后端验证 CPU 推理。
 完整 A100 模型测试仍待收集。
 
 旧 issue 的代码版本字段填写 `aa3fd1d9`，`collect_env` 则显示 `706f1dd12`；`original` 按前者复测。

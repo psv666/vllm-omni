@@ -66,6 +66,9 @@ trap collect_outputs EXIT
 
 [[ "$(git rev-parse HEAD)" == "$EXPECTED_OMNI_SHA" ]] || { echo 'Unexpected mounted checkout.' >&2; exit 2; }
 cp "$config_path" /repro/env/original-test-config.json
+# Verify the small CPU VAD graph before loading Qwen or opening a session.
+python /repro-support/server_vad.py "$SERVER_VAD_MODEL_PATH" /repro/env/server-vad.json \
+  2>&1 | tee /repro/env/server-vad-preflight.log
 # Produce a per-run configuration so the pinned source checkout stays pristine.
 python - "$config_path" /repro/env/test-config.json <<'PY'
 import hashlib
@@ -76,6 +79,7 @@ from pathlib import Path
 
 sys.path.insert(0, '/repro-support')
 from local_dataset import prepare_dataset
+from server_vad import configure_deploy
 
 source, destination = map(Path, sys.argv[1:])
 config = json.loads(source.read_text())
@@ -88,6 +92,8 @@ for case in config:
     case['benchmark_params'] = [params for params in case['benchmark_params']
                                 if params.get('duplex_eval_split') == 'PR_correction']
     assert len(case['benchmark_params']) == 1, 'Expected exactly one PR_correction benchmark.'
+    configure_deploy(case['server_params'], os.environ['SERVER_VAD_MODEL_PATH'],
+                     destination.parent / 'repro-deploy.yaml')
 local_models = {}
 for variable, role in [('QWEN3_OMNI_MODEL_DIR', 'server_params'), ('JUDGE_MODEL_DIR', 'judge_server_params')]:
     value = os.environ.get(variable)

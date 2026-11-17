@@ -74,7 +74,14 @@ def settings(config: object, base: Path, home: str, profile_override: str | None
     paths = mapping(
         config.get("paths", {}),
         "paths",
-        {"repro_root", "hf_cache_dir", "qwen3_omni_model_dir", "judge_model_dir", "duplex_eval_dataset_dir"},
+        {
+            "repro_root",
+            "hf_cache_dir",
+            "qwen3_omni_model_dir",
+            "judge_model_dir",
+            "duplex_eval_dataset_dir",
+            "server_vad_model_path",
+        },
     )
     profiles = mapping(config.get("profiles", {}), "profiles", {"ci", "original"})
     selected = mapping(profiles.get(profile, {}), f"profiles.{profile}", {"gpus", "repro_root"})
@@ -100,6 +107,9 @@ def settings(config: object, base: Path, home: str, profile_override: str | None
         local_inputs[key] = local_path(paths.get(key, ""), f"paths.{key}", base, home)
         if offline and not local_inputs[key]:
             raise ValueError(f"paths.{key} is required when offline is true; edit the YAML before running")
+    local_inputs["server_vad_model_path"] = local_path(
+        paths.get("server_vad_model_path", ""), "paths.server_vad_model_path", base, home
+    )
     level = text(config.get("log_level", "INFO"), "log_level").upper()
     if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         raise ValueError("log_level must be DEBUG, INFO, WARNING, ERROR or CRITICAL")
@@ -124,6 +134,7 @@ def settings(config: object, base: Path, home: str, profile_override: str | None
         "QWEN3_OMNI_MODEL_DIR": local_inputs["qwen3_omni_model_dir"],
         "JUDGE_MODEL_DIR": local_inputs["judge_model_dir"],
         "DUPLEX_EVAL_DATASET_DIR": local_inputs["duplex_eval_dataset_dir"],
+        "SERVER_VAD_MODEL_PATH": local_inputs["server_vad_model_path"],
         "REPRO_OFFLINE": "1" if offline else "0",
         "HF_HUB_OFFLINE": "1" if offline else "0",
         "HF_DATASETS_OFFLINE": "1" if offline else "0",
