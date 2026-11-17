@@ -5,7 +5,8 @@
 # Usage: GPUS=0,1,2 bash repro_9258.sh ci
 #        GPUS=0,1,2 bash repro_9258.sh original
 # Options: REPRO_ROOT, REPRO_REPO_URL, HF_CACHE_DIR, PREFETCH=0|1,
-# CAPTURE_STDERR=0|1, QWEN3_OMNI_MODEL_DIR, JUDGE_MODEL_DIR.
+# CAPTURE_STDERR=0|1, QWEN3_OMNI_MODEL_DIR, JUDGE_MODEL_DIR,
+# DUPLEX_EVAL_DATASET_DIR, HF_HUB_OFFLINE=1, HF_DATASETS_OFFLINE=1.
 # The README also shows invocation from the repo root.
 set -Eeuo pipefail
 
@@ -50,6 +51,10 @@ for model_var in QWEN3_OMNI_MODEL_DIR JUDGE_MODEL_DIR; do
     printf -v "$model_var" '%s' "$model_value"
   fi
 done
+if [[ -n "${DUPLEX_EVAL_DATASET_DIR:-}" ]]; then
+  [[ -d "$DUPLEX_EVAL_DATASET_DIR" ]] || { echo "DUPLEX_EVAL_DATASET_DIR is not a directory: $DUPLEX_EVAL_DATASET_DIR" >&2; exit 2; }
+  DUPLEX_EVAL_DATASET_DIR="$(cd -- "$DUPLEX_EVAL_DATASET_DIR" && pwd -P)"
+fi
 root_input="${REPRO_ROOT:-$HOME/issue9258-a100}"
 mkdir -p -- "$root_input"
 repro_root="$(cd -- "$root_input" && pwd -P)"
@@ -93,10 +98,15 @@ printf '%s\n' "$gpu_ids" > "$run_dir/physical-gpus.txt"
 printf 'QWEN3_OMNI_MODEL_DIR=%s\nJUDGE_MODEL_DIR=%s\n' \
   "${QWEN3_OMNI_MODEL_DIR:-Hugging Face model ID}" "${JUDGE_MODEL_DIR:-Hugging Face model ID}" \
   > "$run_dir/local-model-host-paths.txt"
+printf '%s\n' "${DUPLEX_EVAL_DATASET_DIR:-Hugging Face dataset ID}" > "$run_dir/local-dataset-host-path.txt"
 nvidia-smi -q > "$run_dir/host-nvidia-smi.txt"
 nvidia-smi topo -m > "$run_dir/host-gpu-topology.txt"
 docker version > "$run_dir/docker-version.txt"
-docker pull "$image"
+if docker image inspect "$image" >/dev/null 2>&1; then
+  printf 'Using cached CI image: %s\n' "$image"
+else
+  docker pull "$image"
+fi
 docker image inspect --format '{{.Id}} {{json .RepoDigests}}' "$image" > "$run_dir/image-digests.txt"
 
 # NVIDIA Container Toolkit exposes only these three physical GPUs. Within the
@@ -122,8 +132,12 @@ if [[ -n "${JUDGE_MODEL_DIR:-}" ]]; then
   docker_args+=(--mount "type=bind,src=$JUDGE_MODEL_DIR,dst=/local-models/judge,readonly"
     -e JUDGE_MODEL_DIR=/local-models/judge)
 fi
+if [[ -n "${DUPLEX_EVAL_DATASET_DIR:-}" ]]; then
+  docker_args+=(--mount "type=bind,src=$DUPLEX_EVAL_DATASET_DIR,dst=/local-datasets/omni-duplex-eval,readonly"
+    -e DUPLEX_EVAL_DATASET_DIR=/local-datasets/omni-duplex-eval)
+fi
 # Forward optional network/auth settings by name; never dump token values.
-for env_name in HF_ENDPOINT HF_TOKEN VLLM_LOGGING_LEVEL HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+for env_name in HF_ENDPOINT HF_TOKEN HF_HUB_OFFLINE HF_DATASETS_OFFLINE VLLM_LOGGING_LEVEL HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
   if [[ -n "${!env_name:-}" ]]; then docker_args+=(-e "$env_name"); fi
 done
 set +e
@@ -131,7 +145,17 @@ docker "${docker_args[@]}" "$image" /repro-support/inside_container.sh 2>&1 | te
 run_status=${PIPESTATUS[0]}
 set -e
 printf '%s\n' "$run_status" > "$run_dir/container-exit-code.txt"
-tar --exclude=evidence.tar.gz -czf "$run_dir/evidence.tar.gz" -C "$run_dir" .
-printf '\nExit code: %s\nEvidence archive: %s/evidence.tar.gz\n' "$run_status" "$run_dir"
+archive_tmp="$(mktemp "$repro_root/runs/.evidence-XXXXXX")"
+# gzip creates its output asynchronously. Keep it outside the archived folder
+# so creation cannot change that folder's metadata while tar is reading it.
+if tar --exclude=evidence.tar.gz -czf "$archive_tmp" -C "$run_dir" .; then
+  mv -- "$archive_tmp" "$run_dir/evidence.tar.gz"
+  printf '\nExit code: %s\nEvidence archive: %s/evidence.tar.gz\n' "$run_status" "$run_dir"
+else
+  archive_status=$?
+  printf 'Archive failed (exit %s); logs remain in %s; partial archive: %s\n' \
+    "$archive_status" "$run_dir" "$archive_tmp" >&2
+  if [[ "$run_status" -eq 0 ]]; then run_status=$archive_status; fi
+fi
 printf 'Full generated response media, if any: %s/tests/dfx/perf/results/\n' "$source_dir"
 exit "$run_status"

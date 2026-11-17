@@ -95,12 +95,29 @@ for variable, role in [('QWEN3_OMNI_MODEL_DIR', 'server_params'), ('JUDGE_MODEL_
         case[role]['model'] = str(directory)
     local_models[variable] = {'container_path': str(directory),
                               'config_sha256': hashlib.sha256(model_config.read_bytes()).hexdigest()}
-if local_models:
+local_dataset = os.environ.get('DUPLEX_EVAL_DATASET_DIR')
+dataset_metadata = {}
+if local_dataset:
+    directory = Path(local_dataset).resolve(strict=True)
+    assert directory.is_dir(), f'Local dataset directory is unavailable: {directory}'
+    files = sorted(directory.rglob('*.parquet'))
+    assert files and all(path.is_file() for path in files), (
+        f'Local dataset needs readable Parquet files: {directory}'
+    )
+    for case in config:
+        for params in case['benchmark_params']:
+            params['dataset_path'] = str(directory)
+    dataset_metadata = {'container_path': str(directory),
+                        'parquet_files': [{'path': str(path.relative_to(directory)), 'bytes': path.stat().st_size}
+                                          for path in files]}
+if local_models or local_dataset:
     destination.write_text(json.dumps(config, indent=2) + '\n')
 else:
     shutil.copyfile(source, destination)
 (destination.parent / 'local-models.json').write_text(json.dumps(local_models, indent=2) + '\n')
+(destination.parent / 'local-dataset.json').write_text(json.dumps(dataset_metadata, indent=2) + '\n')
 print('Local model overrides: ' + json.dumps(local_models))
+print('Local dataset override: ' + json.dumps(dataset_metadata))
 PY
 config_path=/repro/env/test-config.json
 export REPRO_CONFIG_PATH="$config_path"
@@ -113,6 +130,7 @@ import json
 import os
 import platform
 import sys
+from urllib.parse import urlsplit
 import torch
 import vllm
 import vllm_omni
@@ -126,11 +144,18 @@ devices = [{'ordinal': i, 'name': torch.cuda.get_device_name(i),
            for i in range(3)]
 assert all('A100' in d['name'] for d in devices), devices
 assert '/opt/vllm-omni/' in vllm_omni.__file__, vllm_omni.__file__
+endpoint = urlsplit(os.environ.get('HF_ENDPOINT') or 'https://huggingface.co')
+endpoint = endpoint._replace(netloc=endpoint.netloc.rsplit('@', 1)[-1], query='', fragment='').geturl()
 print(json.dumps({'python': sys.version, 'platform': platform.platform(),
                   'torch': torch.__version__, 'cuda': torch.version.cuda,
                   'vllm': vllm.__version__, 'vllm_commit': __commit_id__,
                   'omni_file': vllm_omni.__file__, 'devices': devices,
                   'profile': os.environ['REPRO_PROFILE'],
+                  'hf_endpoint': endpoint,
+                  'hf_hub_offline': os.environ.get('HF_HUB_OFFLINE'),
+                  'hf_datasets_offline': os.environ.get('HF_DATASETS_OFFLINE'),
+                  'proxy_env_set': [name for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')
+                                    if os.environ.get(name)],
                   'capture_stderr': os.environ.get('CAPTURE_STDERR'),
                   'prefetch': os.environ.get('PREFETCH')}, indent=2))
 PY
@@ -163,13 +188,18 @@ for model_id in model_ids:
 for case in config:
     for params in case['benchmark_params']:
         dataset = params['dataset_path']
-        repo, separator, revision = dataset.partition('@')
-        info = api.dataset_info(repo, revision=revision if separator else None)
+        local_dataset = Path(dataset).is_dir()
+        if not local_dataset:
+            repo, separator, revision = dataset.partition('@')
+            info = api.dataset_info(repo, revision=revision if separator else None)
         print(f'Preparing dataset {dataset}, split={params["duplex_eval_split"]}', flush=True)
         samples = load_samples(dataset, split=params['duplex_eval_split'], limit=1)
         assert samples, 'Dataset returned no samples.'
-        assets['datasets'].append({'repo': repo, 'revision': info.sha,
-                                    'split': params['duplex_eval_split']})
+        if local_dataset:
+            assets['datasets'].append({'local_path': dataset, 'split': params['duplex_eval_split']})
+        else:
+            assets['datasets'].append({'repo': repo, 'revision': info.sha,
+                                        'split': params['duplex_eval_split']})
 Path('/repro/env/assets.json').write_text(json.dumps(assets, indent=2) + '\n')
 PY
 fi

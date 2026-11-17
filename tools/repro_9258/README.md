@@ -16,7 +16,8 @@
 
 - Linux x86_64，Bash、Git、Docker、NVIDIA Container Toolkit、`nvidia-smi`、`tar`。
 - 三张空闲的 A100 80GB。容器逻辑 GPU 0 跑 Thinker，GPU 1 跑 Talker/Code2Wav，GPU 2 跑评测模型。
-- 能拉取 Git 仓库和 `public.ecr.aws` 镜像，并能访问 Hugging Face 模型和数据集。
+- 准备源码和首次获取缺失的 CI 镜像时需要相应网络；镜像已有缓存时直接复用。
+- 模型和数据集可使用本地目录；选择在线加载时需要能访问对应 Hugging Face 资源。
 - 建议预留约 200–300GB 磁盘，用于两个镜像、共享模型缓存和输出。
 
 镜像中的 CUDA 版本为 13。脚本会在模型测试前检查宿主驱动可用性、GPU 数量、vLLM 版本及编译扩展。
@@ -91,8 +92,35 @@ GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
 缓存的 `snapshots/<revision>/` 通常通过符号链接引用同级 `blobs/` 中的权重；这种布局需要挂载完整缓存。
 本次配置保存在 `env/test-config.json`，原配置保存在 `env/original-test-config.json`。
 
+## 指定已有数据集路径
+
+用 `DUPLEX_EVAL_DATASET_DIR` 指定提前准备好的原始 Parquet 数据集目录：
+
+```bash
+export DUPLEX_EVAL_DATASET_DIR=/home/pengsiv/datasets/Omni-DuplexEval
+GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
+```
+
+目录保留数据集的 `README.md` 分片配置和 `data/*.parquet` 文件，包括对应测试需要的完整分片。
+`ci` 使用 PR_correction；`original` 使用 PR_correction 和 RTD_counting。
+目录会只读挂载进容器，本次测试的 `dataset_path` 会自动指向本地目录。
+预检查会验证本地数据可读，跳过在线数据集元数据查询。
+
+两个本地模型目录和数据集都已设置时，可以显式关闭 Hugging Face 在线访问：
+
+```bash
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+GPUS=0,1,2 bash tools/repro_9258/repro_9258.sh ci
+```
+
+本地数据集目录和文件清单会保存在 `env/local-dataset.json`。
+两组实验应使用同一份准备好的数据；CI 对照的数据集原始 revision 为
+`de63329f76daa5e0c604363ef6a2c383dfba45f6`。
+
 默认先下载模型与数据集文件；该过程不会启动 Omni 引擎或创建 duplex session。
-每次测试都会创建新容器并启动新服务。缓存已准备好时可设置 `PREFETCH=0`。
+指定本地模型和数据集时改为检查本地文件。每次测试都会创建新容器并启动新服务。
+缓存已准备好时可设置 `PREFETCH=0`。
 
 ## 测试和日志
 
@@ -116,6 +144,15 @@ H100/B200 是用例的收集标签；这段实现只检查 CUDA 卡数，不据�
 `Realtime WebSocket closed before the requested event arrived`。
 还应检查服务端的 `duplex open timed out`、异常栈及对应时间。
 脚本保留测试退出码，并额外拒绝将 skipped 或请求未全部成功的运行算作通过。
+
+如果停在 `Preparing dataset`，并出现 `Distant resource does not have an ETag`，
+这是 Hugging Face 数据集下载的元数据或网络路径问题，尚未进入模型服务测试。
+可以改用提前准备的 `DUPLEX_EVAL_DATASET_DIR`，直接读取本地文件；
+`PREFETCH=0` 只跳过预下载，正式测试仍需要读取数据集。
+实际 Hugging Face endpoint 和代理变量是否设置会记录在 `env/python-runtime.json`，不保存代理值。
+
+诊断包先写到运行目录外，再放入本次目录，避免归档文件本身触发目录改动警告。
+容器内准备或测试失败后正常退出也会打包，并保留原始失败退出码。
 
 ## 验证范围
 
