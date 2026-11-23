@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
+import os
+
 from vllm.logger import init_logger
 from vllm.v1.worker.workspace import init_workspace_manager
 
@@ -31,3 +33,9 @@ class NPUARWorker(OmniWorkerMixin, OmniNPUWorkerBase):
 
         logger.info("Using MR v2 NPUOmniARModelRunner.")
         self.model_runner = self.model_runner_cls(self.vllm_config, self.device)
+        if (trace_dir := os.environ.get("VLLM_OMNI_A3_THINKER_TRACE_DIR")) and (
+            self.vllm_config.model_config.model_stage == "thinker"
+        ):
+            from vllm_omni.utils.a3_thinker_probe import attach_worker_probe
+
+            attach_worker_probe(self.model_runner, trace_dir, self.rank)

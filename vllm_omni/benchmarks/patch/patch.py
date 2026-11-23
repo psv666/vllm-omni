@@ -4077,6 +4077,10 @@ async def benchmark(
     else:
         print("Skipping endpoint ready check.")
 
+    trace_windows = bool(os.environ.get("VLLM_OMNI_A3_THINKER_TRACE_DIR"))
+    if trace_windows:
+        from vllm_omni.utils.a3_thinker_probe import trace_window
+
     warmup_outputs: list[RequestFuncOutput] = []
     if num_warmups > 0:
         print(f"Warming up with {num_warmups} requests...")
@@ -4088,12 +4092,16 @@ async def benchmark(
             async with warmup_semaphore:
                 return await request_func(request_func_input=warmup_input, session=session, pbar=warmup_pbar)
 
+        if trace_windows:
+            trace_window("warmup", "start", max_concurrency)
         for i in range(num_warmups):
             warmup_input = _salted_copy(test_input, warmup_scope and f"{warmup_scope}-{i}")
             warmup_input = make_realtime_video_warmup(warmup_input)
             request_task = asyncio.create_task(warmup_limited_request_func(warmup_input))
             warmup_tasks.append(request_task)
         warmup_outputs = await asyncio.gather(*warmup_tasks)
+        if trace_windows:
+            trace_window("warmup", "end", max_concurrency)
         if _ISOLATE_PREFIX_CACHE and not all(output.success for output in warmup_outputs):
             await session.close()
             raise ValueError("Warmup requests failed; refusing to measure an unprepared workload")
@@ -4190,6 +4198,8 @@ async def benchmark(
         probe_task = asyncio.create_task(probe_loop())
 
     _prepare_omniinteract_batch(input_requests)
+    if trace_windows:
+        trace_window("measured", "start", max_concurrency)
     benchmark_start_time = time.perf_counter()
     tasks: list[asyncio.Task] = []
     request_func_inputs: list[RequestFuncInput] = []
@@ -4279,6 +4289,8 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    if trace_windows:
+        trace_window("measured", "end", max_concurrency)
     # Capture the measurement boundary before metrics and accuracy evaluation.
     # Upstream's result "date" is populated only after this function returns.
     benchmark_end_time = datetime.now().isoformat()

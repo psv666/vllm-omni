@@ -300,6 +300,11 @@ class StageEngineCoreProc(EngineCoreProc):
                 **kwargs,
             )
 
+            if omni_stage_id == 0 and (trace_dir := os.environ.get("VLLM_OMNI_A3_THINKER_TRACE_DIR")):
+                from vllm_omni.utils.a3_thinker_probe import attach_engine_probe
+
+                attach_engine_probe(engine_core, trace_dir)
+
             # Each subprocess corresponds to exactly one omni replica with
             # its own OmniMasterServer allocation, so the heartbeat client
             # runs unconditionally — there is no dp_rank-based gating.
