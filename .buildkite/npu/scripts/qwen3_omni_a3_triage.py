@@ -368,11 +368,13 @@ def summarize_graphs(trace, concurrency=16, batches=(8, 9, 16)):
             continue
         groups_per_rank_batch[rank_batch] += 1
         prep, attn, model, total = zip(*rows)
+        forward = [value for value in model if value is not None]
         report[key] = {
             "n": len(rows),
             "prepare_inputs_p50_ms": p50_ms(prep),
             "prepare_attn_p50_ms": p50_ms(attn),
-            "forward_p50_ms": p50_ms(model),
+            "forward_p50_ms": p50_ms(forward),
+            "forward_p95_ms": round(percentile95(forward) / 1e6, 3) if forward else None,
             "execute_p50_ms": p50_ms(total),
             "execute_p95_ms": round(percentile95(total) / 1e6, 3),
         }
