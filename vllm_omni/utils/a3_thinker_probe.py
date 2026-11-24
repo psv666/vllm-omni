@@ -25,6 +25,7 @@ class ThinkerProbe:
         self.path = Path(directory) / f"{owner}-{os.getpid()}.json"
         self.prompt_lengths: dict[str, int] = {}
         self.rows: list[tuple[str, int, str, int, int]] = []
+        self.decode_graphs: list[tuple] = []
         self.dropped = 0
         # Multiprocessing can bypass atexit in child processes.
         if finalize:
@@ -63,7 +64,11 @@ class ThinkerProbe:
     def flush(self):
         temp = self.path.with_suffix(".tmp")
         with temp.open("w", encoding="utf-8") as file:
-            json.dump({"rows": self.rows, "dropped": self.dropped}, file, separators=(",", ":"))
+            json.dump(
+                {"rows": self.rows, "decode_graphs": self.decode_graphs, "dropped": self.dropped},
+                file,
+                separators=(",", ":"),
+            )
         temp.replace(self.path)
 
 
@@ -112,17 +117,86 @@ def attach_worker_probe(runner, directory: str, rank: int) -> None:
     probe = ThinkerProbe(directory, f"tp{rank}")
     execute = runner.execute_model
     sample = runner.sample_tokens
+    prepare = runner.prepare_inputs
+    prepare_attn = runner.prepare_attn
+    call_model = runner._call_model
     current_batch = ("unknown", 0)
+    shape = None
+    model_ns = None
+    attn_ns = None
+    graph_ns = None
+    graph_manager = None
+
+    def timed_prepare(scheduler_output, batch_req_state, batch_desc, *args, **kwargs):
+        nonlocal shape
+        if current_batch[0] != "decode" or current_batch[1] < 8:
+            return prepare(scheduler_output, batch_req_state, batch_desc, *args, **kwargs)
+        started = time.monotonic_ns()
+        result = prepare(scheduler_output, batch_req_state, batch_desc, *args, **kwargs)
+        shape = (
+            scheduler_output.total_num_scheduled_tokens,
+            batch_desc.cg_mode.name,
+            result.num_tokens_after_padding,
+            batch_desc.num_reqs,
+            time.monotonic_ns() - started,
+        )
+        return result
+
+    def timed_prepare_attn(*args, **kwargs):
+        nonlocal attn_ns
+        if shape is None:
+            return prepare_attn(*args, **kwargs)
+        started = time.monotonic_ns()
+        result = prepare_attn(*args, **kwargs)
+        attn_ns = time.monotonic_ns() - started
+        return result
+
+    def time_graph_call(call):
+        def timed_graph_call(*args, **kwargs):
+            nonlocal graph_ns
+            if shape is None:
+                return call(*args, **kwargs)
+            started = time.monotonic_ns()
+            result = call(*args, **kwargs)
+            graph_ns = (graph_ns or 0) + time.monotonic_ns() - started
+            return result
+
+        return timed_graph_call
+
+    def timed_call_model(*args, **kwargs):
+        nonlocal model_ns
+        if shape is None:
+            return call_model(*args, **kwargs)
+        started = time.monotonic_ns()
+        result = call_model(*args, **kwargs)
+        model_ns = (model_ns or 0) + time.monotonic_ns() - started
+        return result
 
     def timed_execute(scheduler_output, *args, **kwargs):
-        nonlocal current_batch
+        nonlocal current_batch, shape, model_ns, attn_ns, graph_ns, graph_manager
+        shape = model_ns = attn_ns = graph_ns = None
         if scheduler_output is None or kwargs.get("dummy_run"):
             current_batch = ("unknown", 0)
             return execute(scheduler_output, *args, **kwargs)
         current_batch = probe.classify(scheduler_output)
+        if current_batch[0] == "decode" and current_batch[1] >= 8 and graph_manager is None:
+            graph_manager = getattr(runner, "cudagraph_manager", None)
+            if graph_manager is not None:
+                for name in ("run_pw_graph", "run_fullgraph"):
+                    if (call := getattr(graph_manager, name, None)) is not None:
+                        setattr(graph_manager, name, time_graph_call(call))
         started = time.monotonic_ns()
         result = execute(scheduler_output, *args, **kwargs)
-        probe.record("execute_model", current_batch, started, time.monotonic_ns())
+        ended = time.monotonic_ns()
+        probe.record("execute_model", current_batch, started, ended)
+        if shape is not None and len(probe.decode_graphs) < MAX_SAMPLES:
+            if graph_ns is not None:
+                model_path, forward_ns = "graph_manager", graph_ns
+            else:
+                model_path, forward_ns = "_call_model" if model_ns is not None else "unmeasured", model_ns
+            probe.decode_graphs.append(
+                (started, current_batch[1], *shape, attn_ns, model_path, forward_ns, ended - started)
+            )
         return result
 
     def timed_sample(*args, **kwargs):
@@ -136,3 +210,6 @@ def attach_worker_probe(runner, directory: str, rank: int) -> None:
 
     runner.execute_model = timed_execute
     runner.sample_tokens = timed_sample
+    runner.prepare_inputs = timed_prepare
+    runner.prepare_attn = timed_prepare_attn
+    runner._call_model = timed_call_model

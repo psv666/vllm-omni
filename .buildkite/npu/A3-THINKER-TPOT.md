@@ -78,6 +78,19 @@ python .buildkite/npu/scripts/qwen3_omni_a3_triage.py summarize-trace \
   --trace-dir "$run_dir/profile/instrumented/trace"
 ```
 
+### 核对 batch 8、9 和 16 的图分派
+
+如果已在同一个 A3 运行栈上复现，并发现实际 decode batch 从 8 到 9 进入慢档，更新诊断分支后可直接复用提交 `2f0207881` 产生的原首轮摘要。用原先的 `runtime_args` 跑一次更新后的 profile，选择新输出目录。
+
+```bash
+python "$recipe" profile \
+  --first-pass "$run_dir/reproduce/summary.json" \
+  --output "$run_dir/profile-graphs" "${runtime_args[@]}"
+python "$recipe" summarize-graphs --trace-dir "$run_dir/profile-graphs/instrumented/trace"
+```
+
+回传 `summarize-graphs` 的摘要和本轮 profile 的 verdict。图数据来自 runner 已选定的执行描述符，包含实际调度 token 数、模式和图的 token/request 尺寸。输入和 attention 准备、模型调用记录的是主机耗时。`forward_hook` 标出记录的是 graph manager 调用、`_call_model` 或未采到的转发路径。
+
 ## 4. 回传
 
 每轮复制一段 `A3_SUMMARY_BEGIN` 到 `A3_SUMMARY_END` 的 stdout 内容，包含两行边界，单段上限 4 KB。预检阻塞时只回传预检摘要和可安全分享的缺项。原始日志、模型数据和 trace 保存在 `run_dir`，通过 A3 本机规则结束本次实验占用。

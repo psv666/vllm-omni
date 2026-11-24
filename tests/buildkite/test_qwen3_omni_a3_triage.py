@@ -97,6 +97,7 @@ def make_output(new=(), cached=(), finished=()):
         scheduled_cached_reqs=SimpleNamespace(req_ids=list(cached), num_computed_tokens=[2] * len(cached)),
         num_scheduled_tokens=dict.fromkeys((*new, *cached), 1),
         finished_req_ids=set(finished),
+        total_num_scheduled_tokens=len(new) + len(cached),
     )
 
 
@@ -109,7 +110,13 @@ def test_probes_preserve_async_future_and_capture_per_phase(tmp_path, monkeypatc
     core = SimpleNamespace(
         scheduler=scheduler, model_executor=SimpleNamespace(execute_model=lambda *args, **kwargs: execution)
     )
-    runner = SimpleNamespace(execute_model=lambda *args, **kwargs: execution, sample_tokens=lambda: execution)
+    runner = SimpleNamespace(
+        execute_model=lambda *args, **kwargs: execution,
+        sample_tokens=lambda: execution,
+        prepare_inputs=lambda *args, **kwargs: None,
+        prepare_attn=lambda *args, **kwargs: None,
+        _call_model=lambda *args, **kwargs: None,
+    )
     engine_probe = probe.attach_engine_probe(core, str(tmp_path))
     probe.attach_worker_probe(runner, str(tmp_path), 0)
 
@@ -199,3 +206,40 @@ def test_recover_worker_only_profile_from_an_existing_trace(tmp_path, monkeypatc
     assert summary["timing_ms_p50_p95_n"]["8/decode/8/tp0/execute_model"] == [5, 5, 1]
     assert summary["timing_ms_p50_p95_n"]["16/decode/8/tp1/execute_model"] == [8, 8, 1]
     assert summary["timing_ms_p50_p95_n"]["16/decode/16/tp1/execute_model"] == [25, 25, 1]
+
+
+def test_graph_probe_records_selected_shape_and_measured_phases(tmp_path, monkeypatch):
+    flushers = []
+    monkeypatch.setattr(probe, "Finalize", lambda _, flush, **kwargs: flushers.append(flush))
+    clock = iter(range(10, 150, 10))
+    monkeypatch.setattr(probe.time, "monotonic_ns", lambda: next(clock))
+    descriptor = SimpleNamespace(cg_mode=SimpleNamespace(name="PIECEWISE"), num_tokens=16, num_reqs=None)
+    runner = SimpleNamespace(
+        sample_tokens=lambda: None,
+        prepare_inputs=lambda output, state, desc: SimpleNamespace(num_tokens_after_padding=desc.num_tokens),
+        prepare_attn=lambda inputs: None,
+        cudagraph_manager=SimpleNamespace(run_pw_graph=lambda: None),
+        _call_model=lambda: None,
+    )
+
+    def execute(output):
+        inputs = runner.prepare_inputs(output, None, descriptor)
+        runner.prepare_attn(inputs)
+        runner.cudagraph_manager.run_pw_graph()
+        return output
+
+    runner.execute_model = execute
+    probe.attach_worker_probe(runner, str(tmp_path), 0)
+    ids = [str(i) for i in range(9)]
+    runner.execute_model(make_output(new=ids))
+    step = make_output(cached=ids)
+    assert runner.execute_model(step) is step
+    flushers[0]()
+    (tmp_path / "windows.jsonl").write_text('["measured","start",16,25]\n["measured","end",16,100]\n', encoding="utf-8")
+    result, gaps = triage.summarize_graphs(tmp_path)
+    assert result["9/tp0/9/PIECEWISE/16/None/graph_manager"]["n"] == 1
+    assert "missing graph descriptor for batch 9/tp1" in gaps
+    data = triage.read_json(next(tmp_path.glob("tp0-*.json")))
+    assert len(data["decode_graphs"]) == 1
+    assert data["decode_graphs"][0][1:6] == [9, 9, "PIECEWISE", 16, None]
+    assert data["decode_graphs"][0][6:] == [10, 10, "graph_manager", 10, 70]

@@ -15,6 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "f602d0295852c430434f8cd2cd87da287db1a96e"
+# The first field run used this revision. Subsequent changes touch only diagnostics.
+FIRST_PASS_CHECKOUT = "2f0207881664c61d4b0d2ecaf262e49c46ebf77a"
 MODEL = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_REV = "26291f793822fb6be9555850f06dfe95f2d7e695"
 CI_IMAGE = "sha256:fdcede880eeba2b93d0dc3fc8532d0cb88dd1c2586f5f61cff7e923b7f55cd69"
@@ -270,14 +272,21 @@ def percentile95(values):
     return sorted(values)[math.ceil(0.95 * len(values)) - 1]
 
 
-def summarize_trace(trace):
+def trace_bounds(trace):
     windows_path = trace / "windows.jsonl"
-    if not windows_path.is_file():
-        return {}, ["missing benchmark windows"]
     bounds = defaultdict(dict)
+    if not windows_path.is_file():
+        return bounds
     for line in windows_path.read_text(encoding="utf-8").splitlines():
         phase, boundary, concurrency, timestamp = json.loads(line)
         bounds[(phase, concurrency)][boundary] = timestamp
+    return bounds
+
+
+def summarize_trace(trace):
+    bounds = trace_bounds(trace)
+    if not bounds:
+        return {}, ["missing benchmark windows"]
     groups = defaultdict(list)
     errors = []
     owners = set()
@@ -319,6 +328,53 @@ def summarize_trace(trace):
             len(samples),
         ]
     return summary, errors
+
+
+def summarize_graphs(trace):
+    interval = trace_bounds(trace).get(("measured", 16), {})
+    if "start" not in interval or "end" not in interval:
+        return {}, ["missing c=16 measurement window"]
+    groups = defaultdict(list)
+    for path in sorted(trace.glob("tp*-*.json")):
+        owner = path.stem.split("-", 1)[0]
+        for row in read_json(path).get("decode_graphs", []):
+            started, batch, tokens, mode, graph_tokens, graph_reqs, prep, attn, model_path, model, total = row
+            if batch not in (8, 9, 16) or not interval["start"] <= started < interval["end"]:
+                continue
+            key = f"{batch}/{owner}/{tokens}/{mode}/{graph_tokens}/{graph_reqs}/{model_path}"
+            groups[key].append((prep, attn, model, total))
+
+    def p50_ms(values):
+        samples = [value for value in values if value is not None]
+        return round(statistics.median(samples) / 1e6, 3) if samples else None
+
+    report = {}
+    omitted = 0
+    groups_per_rank_batch = defaultdict(int)
+    for key, rows in sorted(groups.items(), key=lambda item: (-len(item[1]), item[0])):
+        rank_batch = key.rsplit("/", 5)[0]
+        if groups_per_rank_batch[rank_batch] == 2:
+            omitted += 1
+            continue
+        groups_per_rank_batch[rank_batch] += 1
+        prep, attn, model, total = zip(*rows)
+        report[key] = {
+            "n": len(rows),
+            "prepare_inputs_p50_ms": p50_ms(prep),
+            "prepare_attn_p50_ms": p50_ms(attn),
+            "forward_p50_ms": p50_ms(model),
+            "execute_p50_ms": p50_ms(total),
+            "execute_p95_ms": round(percentile95(total) / 1e6, 3),
+        }
+    errors = [
+        f"missing graph descriptor for batch {batch}/{rank}"
+        for batch in (8, 9, 16)
+        for rank in ("tp0", "tp1")
+        if not any(key.startswith(f"{batch}/{rank}/") for key in report)
+    ]
+    if omitted:
+        errors.append(f"{omitted} lower-frequency descriptor groups kept in local traces")
+    return report, errors
 
 
 def compact_timings(timings):
@@ -406,7 +462,9 @@ def emit(summary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("check", "reproduce", "profile", "replay", "summarize-trace"))
+    parser.add_argument(
+        "phase", choices=("check", "reproduce", "profile", "replay", "summarize-trace", "summarize-graphs")
+    )
     parser.add_argument("--output", type=Path, help="new directory for local logs and results")
     parser.add_argument("--first-pass", type=Path, help="first-pass summary.json required for profile")
     parser.add_argument("--base-image-digest", default=os.environ.get("A3_BASE_IMAGE_DIGEST"))
@@ -415,9 +473,20 @@ def main():
     parser.add_argument("--artifacts", type=Path, help="directory of existing result JSON for replay")
     parser.add_argument("--trace-dir", type=Path, help="local instrumented/trace directory from a completed profile")
     args = parser.parse_args()
+    if args.phase in ("summarize-trace", "summarize-graphs") and args.trace_dir is None:
+        parser.error(f"{args.phase} requires --trace-dir")
+    if args.phase == "summarize-graphs":
+        graphs, gaps = summarize_graphs(args.trace_dir)
+        emit(
+            {
+                "phase": args.phase,
+                "key": "batch/rank/scheduled_tokens/mode/graph_tokens/graph_reqs/forward_hook",
+                "graphs": graphs,
+                "probe_gaps": gaps,
+            }
+        )
+        return 0 if graphs else 1
     if args.phase == "summarize-trace":
-        if args.trace_dir is None:
-            parser.error("summarize-trace requires --trace-dir")
         timings, gaps = summarize_trace(args.trace_dir)
         compact = compact_timings(timings)
         emit({"phase": args.phase, "run": {"probe_gaps": gaps, "timing_ms_p50_p95_n": compact}})
@@ -465,7 +534,10 @@ def main():
                 summary["initial_verdict"] = run["verdict"]
                 run = run_cases(directory / "ci-order", env, model, [1, 4, 8, 16], probe=False)
         else:
-            if runtime != first["runtime"]:
+            required_runtime = dict(first["runtime"])
+            if required_runtime["checkout"] == FIRST_PASS_CHECKOUT:
+                required_runtime["checkout"] = runtime["checkout"]
+            if runtime != required_runtime:
                 raise TriageError("runtime differs from first pass; repeat reproduce in this container")
             if first["run"]["concurrencies"] not in ([8, 16], [1, 4, 8, 16]):
                 raise TriageError("invalid first-pass benchmark sequence")
