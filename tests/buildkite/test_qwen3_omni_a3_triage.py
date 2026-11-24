@@ -243,3 +243,39 @@ def test_graph_probe_records_selected_shape_and_measured_phases(tmp_path, monkey
     assert len(data["decode_graphs"]) == 1
     assert data["decode_graphs"][0][1:6] == [9, 9, "PIECEWISE", 16, None]
     assert data["decode_graphs"][0][6:] == [10, 10, "graph_manager", 10, 70]
+
+
+def test_graph_size_ab_configs_only_change_thinker_bucket(tmp_path):
+    sizes = triage.THINKER_GRAPH_SIZES
+    (a,) = triage.make_config([8], tmp_path, sizes)
+    (b,) = triage.make_config([8], tmp_path, tuple(size for size in sizes if size != 8))
+    a_compile = a["server_params"]["stage_overrides"]["0"]["compilation_config"]
+    b_compile = b["server_params"]["stage_overrides"]["0"]["compilation_config"]
+    assert a_compile["prefill_cudagraph_capture_token_sizes"] == list(sizes)
+    assert b_compile["prefill_cudagraph_capture_token_sizes"] == [size for size in sizes if size != 8]
+    a_compile["prefill_cudagraph_capture_token_sizes"].remove(8)
+    assert a == b
+
+
+@pytest.mark.parametrize("wrong_bucket", [False, True])
+def test_graph_size_ab_validates_actual_dispatch(tmp_path, monkeypatch, wrong_bucket):
+    calls = []
+
+    def run_cases(directory, env, model, concurrencies, probe, graph_sizes):
+        assert concurrencies == [8] and probe
+        calls.append(directory.name)
+        graph_tokens = 8 if 8 in graph_sizes or wrong_bucket else 16
+        return {
+            "verdict": "valid",
+            "pytest_exit": 0,
+            "errors": [],
+            "probe_gaps": [],
+            "cases": {8: {}},
+            "graphs": {f"8/tp{rank}/8/PIECEWISE/{graph_tokens}/None/graph_manager": {"n": 33} for rank in range(2)},
+        }
+
+    monkeypatch.setattr(triage, "run_cases", run_cases)
+    result = triage.run_graph_size_ab(tmp_path, {}, tmp_path)
+    assert calls == ["A", "B"]
+    assert result["verdict"] == ("invalid" if wrong_bucket else "valid")
+    assert triage.read_json(tmp_path / "ab-results.json") == result["arms"]

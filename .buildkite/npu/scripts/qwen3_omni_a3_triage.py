@@ -23,6 +23,7 @@ CI_IMAGE = "sha256:fdcede880eeba2b93d0dc3fc8532d0cb88dd1c2586f5f61cff7e923b7f55c
 SOURCE_CONFIG = ROOT / "tests/dfx/perf/tests/test_qwen3_omni_no_async_chunk.json"
 TRACE_ENV = "VLLM_OMNI_A3_THINKER_TRACE_DIR"
 COUNTS = {1: 4, 4: 16, 8: 32, 16: 64}
+THINKER_GRAPH_SIZES = (1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64)
 LIMIT = 4096
 ANSI = re.compile(r"\x1b_bk;t=\d+\x07|\x1b\[[0-?]*[ -/]*[@-~]")
 MEASUREMENT = re.compile(r"^Maximum request concurrency:\s*(\d+)\s*$")
@@ -133,7 +134,7 @@ def preflight(directory, env, base_image_digest, model_dir):
     return runtime, model
 
 
-def make_config(concurrencies, model):
+def make_config(concurrencies, model, graph_sizes=None):
     (config,) = read_json(SOURCE_CONFIG)
     (workload,) = (row for row in config["benchmark_params"] if row["dataset_name"] == "random")
     payload = workload["extra_body"]["sampling_params_list"]
@@ -163,6 +164,15 @@ def make_config(concurrencies, model):
         "--stage-init-timeout",
         "900",
     ]
+    if graph_sizes is not None:
+        server["stage_overrides"] = {
+            "0": {
+                "compilation_config": {
+                    "cudagraph_mode": "PIECEWISE",
+                    "prefill_cudagraph_capture_token_sizes": list(graph_sizes),
+                }
+            },
+        }
     return [config]
 
 
@@ -330,16 +340,16 @@ def summarize_trace(trace):
     return summary, errors
 
 
-def summarize_graphs(trace):
-    interval = trace_bounds(trace).get(("measured", 16), {})
+def summarize_graphs(trace, concurrency=16, batches=(8, 9, 16)):
+    interval = trace_bounds(trace).get(("measured", concurrency), {})
     if "start" not in interval or "end" not in interval:
-        return {}, ["missing c=16 measurement window"]
+        return {}, [f"missing c={concurrency} measurement window"]
     groups = defaultdict(list)
     for path in sorted(trace.glob("tp*-*.json")):
         owner = path.stem.split("-", 1)[0]
         for row in read_json(path).get("decode_graphs", []):
             started, batch, tokens, mode, graph_tokens, graph_reqs, prep, attn, model_path, model, total = row
-            if batch not in (8, 9, 16) or not interval["start"] <= started < interval["end"]:
+            if batch not in batches or not interval["start"] <= started < interval["end"]:
                 continue
             key = f"{batch}/{owner}/{tokens}/{mode}/{graph_tokens}/{graph_reqs}/{model_path}"
             groups[key].append((prep, attn, model, total))
@@ -368,7 +378,7 @@ def summarize_graphs(trace):
         }
     errors = [
         f"missing graph descriptor for batch {batch}/{rank}"
-        for batch in (8, 9, 16)
+        for batch in batches
         for rank in ("tp0", "tp1")
         if not any(key.startswith(f"{batch}/{rank}/") for key in report)
     ]
@@ -400,11 +410,11 @@ def compact_timings(timings):
     return compact
 
 
-def run_cases(directory, env, model, concurrencies, probe):
+def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None):
     directory.mkdir()
     config = directory / "config.json"
     log = directory / "run.log"
-    write_json(config, make_config(concurrencies, model))
+    write_json(config, make_config(concurrencies, model, graph_sizes))
     process_env = {**env, "BENCHMARK_DIR": str(directory)}
     if probe:
         trace = directory / "trace"
@@ -440,12 +450,42 @@ def run_cases(directory, env, model, concurrencies, probe):
         **graph,
         "errors": errors,
     }
-    if probe:
+    if graph_sizes is not None:
+        result["verdict"] = "valid" if rc == 0 and not any("error" in case for case in cases.values()) else "invalid"
+        result["graphs"], result["probe_gaps"] = summarize_graphs(trace, concurrency=8, batches=(8,))
+    elif probe:
         timings, gaps = summarize_trace(trace)
         write_json(trace / "timing-summary.json", timings)
         result["probe_gaps"] = gaps
         result["timing_ms_p50_p95_n"] = compact_timings(timings)
     return result
+
+
+def run_graph_size_ab(directory, env, model):
+    arms = {}
+    for label, graph_tokens in (("A", 8), ("B", 16)):
+        sizes = THINKER_GRAPH_SIZES if label == "A" else tuple(size for size in THINKER_GRAPH_SIZES if size != 8)
+        result = run_cases(directory / label, env, model, [8], probe=True, graph_sizes=sizes)
+        graphs = result["graphs"]
+        gaps = list(result["probe_gaps"])
+        expected = {f"8/tp{rank}/8/PIECEWISE/{graph_tokens}/None/graph_manager" for rank in range(2)}
+        wrong = set(graphs) - expected
+        if wrong or expected - set(graphs):
+            gaps.append(f"expected two batch-8 rank groups dispatched to the PIECEWISE {graph_tokens}-token graph")
+        if any(graphs[key]["n"] < 32 for key in expected & graphs.keys()):
+            gaps.append("fewer than 32 measured decode steps on an expected rank")
+        arms[label] = {
+            "expected_graph_tokens": graph_tokens,
+            "case": result["cases"][8],
+            "pytest_exit": result["pytest_exit"],
+            "observed_graphs": graphs,
+            "errors": result["errors"],
+            "probe_gaps": gaps,
+        }
+        write_json(directory / "ab-results.json", arms)
+        if result["verdict"] != "valid" or gaps:
+            return {"verdict": "invalid", "failed_arm": label, "arms": arms}
+    return {"verdict": "valid", "arms": arms}
 
 
 def emit(summary):
@@ -463,7 +503,8 @@ def emit(summary):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "phase", choices=("check", "reproduce", "profile", "replay", "summarize-trace", "summarize-graphs")
+        "phase",
+        choices=("check", "reproduce", "profile", "replay", "summarize-trace", "summarize-graphs", "graph-size-ab"),
     )
     parser.add_argument("--output", type=Path, help="new directory for local logs and results")
     parser.add_argument("--first-pass", type=Path, help="first-pass summary.json required for profile")
@@ -528,6 +569,8 @@ def main():
         summary["runtime"] = runtime
         if args.phase == "check":
             run = {"verdict": "ready"}
+        elif args.phase == "graph-size-ab":
+            run = run_graph_size_ab(directory, env, model)
         elif args.phase == "reproduce":
             run = run_cases(directory / "initial", env, model, [8, 16], probe=False)
             if run["verdict"] == "near_normal" and runtime["ci_reference_match"]:

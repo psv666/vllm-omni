@@ -96,3 +96,15 @@ python "$recipe" summarize-graphs --trace-dir "$run_dir/profile-graphs/instrumen
 每轮复制一段 `A3_SUMMARY_BEGIN` 到 `A3_SUMMARY_END` 的 stdout 内容，包含两行边界，单段上限 4 KB。预检阻塞时只回传预检摘要和可安全分享的缺项。原始日志、模型数据和 trace 保存在 `run_dir`，通过 A3 本机规则结束本次实验占用。
 
 历史对照是 [正常样本 #11820](https://buildkite.com/vllm/vllm-omni-npu-ci/builds/11820#01a1e73e-233a-4198-873b-482381ec903b) 和 [异常样本 #12664](https://buildkite.com/vllm/vllm-omni-npu-ci/builds/12664#01a20476-6207-4590-97f8-fee4728c5107)。
+
+
+## 图尺寸 A/B 对照
+
+当协调端派发图尺寸 A/B 时，在原实验容器、同一工作树的最新指定提交、同一组设备上执行这条命令。沿用原先的 `runtime_args`，包括原模型路径和可核对的基础镜像 digest。`graph-size-ab` 自行生成配置、串行运行两组、校验真实图分派并打印摘要。
+
+```bash
+python .buildkite/npu/scripts/qwen3_omni_a3_triage.py graph-size-ab \
+  --output "$run_dir/graph-size-ab" "${runtime_args[@]}"
+```
+
+A 保留 Thinker 的 8-token bucket。B 只从 Thinker 的 `prefill_cudagraph_capture_token_sizes` 移除尺寸 8。两组均为 no-chunk `c=8, n=32`。脚本仅用实测 `batch=8`、8 个调度 token 的 PIECEWISE 步判定，要求 A 选中 8-token 图、B 选中 16-token 图。回写 stdout 的完整摘要。若脚本给出 `invalid`，回写摘要并保留日志，等待本地协调端处理。
