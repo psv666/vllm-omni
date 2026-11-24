@@ -110,7 +110,7 @@ def test_probes_preserve_async_future_and_capture_per_phase(tmp_path, monkeypatc
         scheduler=scheduler, model_executor=SimpleNamespace(execute_model=lambda *args, **kwargs: execution)
     )
     runner = SimpleNamespace(execute_model=lambda *args, **kwargs: execution, sample_tokens=lambda: execution)
-    probe.attach_engine_probe(core, str(tmp_path))
+    engine_probe = probe.attach_engine_probe(core, str(tmp_path))
     probe.attach_worker_probe(runner, str(tmp_path), 0)
 
     for _ in range(3):
@@ -119,6 +119,7 @@ def test_probes_preserve_async_future_and_capture_per_phase(tmp_path, monkeypatc
         assert runner.execute_model(schedule) is execution
         assert runner.sample_tokens() is execution
         assert core.scheduler.update_from_output(schedule, execution) is execution
+    engine_probe.flush()
     for flush in flushers:
         flush()
     engine = triage.read_json(next(tmp_path.glob("engine-*.json")))
@@ -173,3 +174,28 @@ def test_summary_budget(capsys):
     assert json.loads(printed.splitlines()[1])["run"]["timing_ms_p50_p95_n"] == {
         "8/decode/8/engine/schedule": [1, 2, 3]
     }
+
+
+def test_recover_worker_only_profile_from_an_existing_trace(tmp_path, monkeypatch, capsys):
+    windows = [
+        ["measured", "start", 8, 10],
+        ["measured", "end", 8, 30],
+        ["measured", "start", 16, 40],
+        ["measured", "end", 16, 60],
+    ]
+    (tmp_path / "windows.jsonl").write_text("\n".join(map(json.dumps, windows)), encoding="utf-8")
+    triage.write_json(tmp_path / "timing-summary.json", {"measured/8/decode/8/tp0/execute_model": [5, 10, 1]})
+    for rank in range(2):
+        rows = [
+            ["decode", batch, operation, timestamp, duration]
+            for batch, timestamp, duration in [(8, 20, 5_000_000), (8, 48, 8_000_000), (16, 50, 25_000_000)]
+            for operation in ["execute_model", "sample_tokens"]
+        ]
+        triage.write_json(tmp_path / f"tp{rank}-{100 + rank}.json", {"rows": rows, "dropped": 0})
+    monkeypatch.setattr("sys.argv", ["a3_triage", "summarize-trace", "--trace-dir", str(tmp_path)])
+    assert triage.main() == 0
+    summary = json.loads(capsys.readouterr().out.splitlines()[1])["run"]
+    assert "missing trace from engine" in summary["probe_gaps"]
+    assert summary["timing_ms_p50_p95_n"]["8/decode/8/tp0/execute_model"] == [5, 5, 1]
+    assert summary["timing_ms_p50_p95_n"]["16/decode/8/tp1/execute_model"] == [8, 8, 1]
+    assert summary["timing_ms_p50_p95_n"]["16/decode/16/tp1/execute_model"] == [25, 25, 1]

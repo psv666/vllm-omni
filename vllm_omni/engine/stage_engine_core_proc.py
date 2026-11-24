@@ -245,6 +245,7 @@ class StageEngineCoreProc(EngineCoreProc):
             )
 
         engine_core: StageEngineCoreProc | None = None
+        thinker_probe = None
         coord_client = None
         try:
             # NOTE: previous revisions hardcoded data_parallel_size=1 here
@@ -303,7 +304,8 @@ class StageEngineCoreProc(EngineCoreProc):
             if omni_stage_id == 0 and (trace_dir := os.environ.get("VLLM_OMNI_A3_THINKER_TRACE_DIR")):
                 from vllm_omni.utils.a3_thinker_probe import attach_engine_probe
 
-                attach_engine_probe(engine_core, trace_dir)
+                thinker_probe = attach_engine_probe(engine_core, trace_dir)
+                logger.info("A3 Thinker EngineCore probe enabled")
 
             # Each subprocess corresponds to exactly one omni replica with
             # its own OmniMasterServer allocation, so the heartbeat client
@@ -359,6 +361,12 @@ class StageEngineCoreProc(EngineCoreProc):
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             try:
+                if thinker_probe is not None:
+                    try:
+                        # Persist before worker teardown can exhaust the process manager's grace period.
+                        thinker_probe.flush()
+                    except OSError:
+                        logger.exception("Failed to persist A3 Thinker EngineCore trace")
                 if signal_callback is not None:
                     signal_callback.stop()
                 if coord_client is not None:

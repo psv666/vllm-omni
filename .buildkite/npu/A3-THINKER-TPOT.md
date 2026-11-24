@@ -69,6 +69,15 @@ python "$recipe" profile \
 - 首轮为 `near_normal` 或 `inconclusive` 时，回传首轮摘要。若是 `invalid`，先按 `run.errors` 和本地日志检查环境与请求校验。
 - 第二轮采样以 `run.verdict` 仍为 `reproduced` 且 `probe_gaps` 为空为完整取证条件。若有缺项，照实回传。主机计时用于区分调度、执行器和 worker 路径，设备端算子与 HCCL 归因需要设备侧证据。
 
+### 从已完成的第二轮恢复摘要
+
+如果第二轮报 EngineCore trace 缺失且摘要没有 worker 计时，拉取诊断分支的更新，在新工作树执行下列只读命令。`run_dir` 仍指向原实验目录。命令不启动服务或使用 NPU，已有的 trace 和摘要文件保留原样。
+
+```bash
+python .buildkite/npu/scripts/qwen3_omni_a3_triage.py summarize-trace \
+  --trace-dir "$run_dir/profile/instrumented/trace"
+```
+
 ## 4. 回传
 
 每轮复制一段 `A3_SUMMARY_BEGIN` 到 `A3_SUMMARY_END` 的 stdout 内容，包含两行边界，单段上限 4 KB。预检阻塞时只回传预检摘要和可安全分享的缺项。原始日志、模型数据和 trace 保存在 `run_dir`，通过 A3 本机规则结束本次实验占用。

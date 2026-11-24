@@ -282,7 +282,10 @@ def summarize_trace(trace):
     errors = []
     owners = set()
     for path in sorted(trace.glob("*.json")):
-        owner = path.stem.split("-", 1)[0]
+        match = re.fullmatch(r"(engine|tp\d+)-\d+\.json", path.name)
+        if match is None:
+            continue
+        owner = match.group(1)
         if owner in owners:
             errors.append(f"duplicate trace process {owner}")
         owners.add(owner)
@@ -316,6 +319,29 @@ def summarize_trace(trace):
             len(samples),
         ]
     return summary, errors
+
+
+def compact_timings(timings):
+    compact = {}
+    for c in (8, 16):
+        for kind in ("decode", "prefill", "mixed", "unknown"):
+            prefix = f"measured/{c}/{kind}/"
+            selected = [(key, values) for key, values in timings.items() if key.startswith(prefix)]
+            if not selected:
+                continue
+            # In an incomplete run the worker traces can still identify useful batch sizes.
+            counts = defaultdict(int)
+            for key, values in selected:
+                batch = int(key.split("/")[3])
+                counts[batch] = max(counts[batch], values[-1])
+            batch = c if kind == "decode" and c in counts else max(counts, key=counts.get)
+            batches = {batch}
+            if kind == "decode" and c == 16 and 8 in counts:
+                batches.add(8)
+            for key, values in selected:
+                if int(key.split("/")[3]) in batches:
+                    compact[key.removeprefix("measured/")] = values
+    return compact
 
 
 def run_cases(directory, env, model, concurrencies, probe):
@@ -362,23 +388,7 @@ def run_cases(directory, env, model, concurrencies, probe):
         timings, gaps = summarize_trace(trace)
         write_json(trace / "timing-summary.json", timings)
         result["probe_gaps"] = gaps
-        compact = {}
-        for c in (8, 16):
-            for kind in ("decode", "prefill", "mixed", "unknown"):
-                prefix = f"measured/{c}/{kind}/"
-                selected = [(key, values) for key, values in timings.items() if key.startswith(prefix)]
-                if not selected:
-                    continue
-                counts = {
-                    int(key.split("/")[3]): values[-1] for key, values in selected if key.endswith("/engine/schedule")
-                }
-                if not counts:
-                    continue
-                batch = c if kind == "decode" and c in counts else max(counts, key=counts.get)
-                for key, values in selected:
-                    if int(key.split("/")[3]) == batch:
-                        compact[key.removeprefix("measured/")] = values
-        result["timing_ms_p50_p95_n"] = compact
+        result["timing_ms_p50_p95_n"] = compact_timings(timings)
     return result
 
 
@@ -396,14 +406,22 @@ def emit(summary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("check", "reproduce", "profile", "replay"))
+    parser.add_argument("phase", choices=("check", "reproduce", "profile", "replay", "summarize-trace"))
     parser.add_argument("--output", type=Path, help="new directory for local logs and results")
     parser.add_argument("--first-pass", type=Path, help="first-pass summary.json required for profile")
     parser.add_argument("--base-image-digest", default=os.environ.get("A3_BASE_IMAGE_DIGEST"))
     parser.add_argument("--model-dir", type=Path, help="local verified model snapshot instead of the HF cache")
     parser.add_argument("--log", type=Path, help="existing complete job log for replay")
     parser.add_argument("--artifacts", type=Path, help="directory of existing result JSON for replay")
+    parser.add_argument("--trace-dir", type=Path, help="local instrumented/trace directory from a completed profile")
     args = parser.parse_args()
+    if args.phase == "summarize-trace":
+        if args.trace_dir is None:
+            parser.error("summarize-trace requires --trace-dir")
+        timings, gaps = summarize_trace(args.trace_dir)
+        compact = compact_timings(timings)
+        emit({"phase": args.phase, "run": {"probe_gaps": gaps, "timing_ms_p50_p95_n": compact}})
+        return 0 if compact else 1
     if args.phase == "replay":
         if args.log is None or args.artifacts is None:
             parser.error("replay requires --log and --artifacts")

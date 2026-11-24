@@ -21,13 +21,14 @@ def trace_window(phase: str, boundary: str, concurrency: int | None) -> None:
 
 
 class ThinkerProbe:
-    def __init__(self, directory: str, owner: str):
+    def __init__(self, directory: str, owner: str, *, finalize: bool = True):
         self.path = Path(directory) / f"{owner}-{os.getpid()}.json"
         self.prompt_lengths: dict[str, int] = {}
         self.rows: list[tuple[str, int, str, int, int]] = []
         self.dropped = 0
         # Multiprocessing can bypass atexit in child processes.
-        Finalize(None, self.flush, exitpriority=10)
+        if finalize:
+            Finalize(None, self.flush, exitpriority=10)
 
     def classify(self, output):
         for req_id in output.finished_req_ids:
@@ -66,8 +67,8 @@ class ThinkerProbe:
         temp.replace(self.path)
 
 
-def attach_engine_probe(core, directory: str) -> None:
-    probe = ThinkerProbe(directory, "engine")
+def attach_engine_probe(core, directory: str) -> ThinkerProbe:
+    probe = ThinkerProbe(directory, "engine", finalize=False)
     schedule = core.scheduler.schedule
     execute = core.model_executor.execute_model
     consume = core.scheduler.update_from_output
@@ -104,6 +105,7 @@ def attach_engine_probe(core, directory: str) -> None:
     core.scheduler.schedule = timed_schedule
     core.model_executor.execute_model = timed_dispatch
     core.scheduler.update_from_output = timed_consume
+    return probe
 
 
 def attach_worker_probe(runner, directory: str, rank: int) -> None:
