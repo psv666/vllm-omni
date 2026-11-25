@@ -10,6 +10,8 @@ from pathlib import Path
 
 TRACE_DIR_ENV = "VLLM_OMNI_A3_THINKER_TRACE_DIR"
 MAX_SAMPLES = 100_000
+DEVICE_BATCH_ENV = "VLLM_OMNI_A3_DEVICE_PROFILE_BATCH"
+DEVICE_STEPS = 4
 
 
 def trace_window(phase: str, boundary: str, concurrency: int | None) -> None:
@@ -113,8 +115,95 @@ def attach_engine_probe(core, directory: str) -> ThinkerProbe:
     return probe
 
 
+class DeviceGraphCapture:
+    """A short NPU trace around warmed graph calls of a single decode shape."""
+
+    def __init__(self, directory: str, rank: int, batch: int):
+        self.directory = Path(directory)
+        self.output = self.directory / f"device-tp{rank}"
+        self.batch = batch
+        self.profiler = None
+        self.measured = False
+        self.finished = False
+        self.matched = 0
+        self.steps = 0
+        self.dispatch_ns = []
+        Finalize(None, self.close, exitpriority=20)
+
+    def call(self, call, args, kwargs, batch, shape):
+        if self.finished:
+            return call(*args, **kwargs)
+        match = (
+            batch == ("decode", self.batch)
+            and shape is not None
+            and shape[:3]
+            == (
+                self.batch,
+                "PIECEWISE",
+                16,
+            )
+        )
+        if not match:
+            if self.profiler is not None:
+                self.close()
+            self.matched = 0
+            return call(*args, **kwargs)
+        if not self.measured:
+            windows = self.directory / "windows.jsonl"
+            self.measured = windows.is_file() and any(
+                json.loads(line)[:3] == ["measured", "start", self.batch]
+                for line in windows.read_text(encoding="utf-8").splitlines()
+                if line.endswith("]")
+            )
+        if not self.measured:
+            return call(*args, **kwargs)
+        self.matched += 1
+        if self.matched <= 8:
+            return call(*args, **kwargs)
+        if self.profiler is None:
+            self.start()
+        started = time.monotonic_ns()
+        result = call(*args, **kwargs)
+        self.dispatch_ns.append(time.monotonic_ns() - started)
+        self.steps += 1
+        if self.steps == DEVICE_STEPS:
+            self.close()
+        return result
+
+    def start(self):
+        import torch_npu
+
+        backend = torch_npu.profiler
+        self.output.mkdir()
+        self.profiler = backend.profile(
+            activities=[backend.ProfilerActivity.CPU, backend.ProfilerActivity.NPU],
+            experimental_config=backend._ExperimentalConfig(
+                export_type=backend.ExportType.Text,
+                profiler_level=backend.ProfilerLevel.Level1,
+                data_simplification=True,
+            ),
+            on_trace_ready=backend.tensorboard_trace_handler(str(self.output)),
+        )
+        self.profiler.start()
+
+    def close(self):
+        if self.profiler is None:
+            return
+        self.finished = True
+        profiler, self.profiler = self.profiler, None
+        profiler.stop()
+        (self.output / "capture.json").write_text(
+            json.dumps(
+                {"steps": self.steps, "graph_tokens": 16, "batch": self.batch, "host_forward_ns": self.dispatch_ns}
+            ),
+            encoding="utf-8",
+        )
+
+
 def attach_worker_probe(runner, directory: str, rank: int) -> None:
     probe = ThinkerProbe(directory, f"tp{rank}")
+    target = os.environ.get(DEVICE_BATCH_ENV)
+    device_capture = DeviceGraphCapture(directory, rank, int(target)) if target in {"8", "9"} else None
     execute = runner.execute_model
     sample = runner.sample_tokens
     prepare = runner.prepare_inputs
@@ -154,10 +243,13 @@ def attach_worker_probe(runner, directory: str, rank: int) -> None:
     def time_graph_call(call):
         def timed_graph_call(*args, **kwargs):
             nonlocal graph_ns
-            if shape is None:
+            if shape is None and device_capture is None:
                 return call(*args, **kwargs)
             started = time.monotonic_ns()
-            result = call(*args, **kwargs)
+            if device_capture is not None:
+                result = device_capture.call(call, args, kwargs, current_batch, shape)
+            else:
+                result = call(*args, **kwargs)
             graph_ns = (graph_ns or 0) + time.monotonic_ns() - started
             return result
 

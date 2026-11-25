@@ -279,3 +279,44 @@ def test_graph_size_ab_validates_actual_dispatch(tmp_path, monkeypatch, wrong_bu
     assert calls == ["A", "B"]
     assert result["verdict"] == ("invalid" if wrong_bucket else "valid")
     assert triage.read_json(tmp_path / "ab-results.json") == result["arms"]
+
+
+def test_device_profile_groups_overlapping_kernels(tmp_path):
+    triage.write_json(
+        tmp_path / "capture.json", {"steps": 4, "batch": 9, "graph_tokens": 16, "host_forward_ns": [200_000] * 4}
+    )
+    (tmp_path / "kernel_details.csv").write_text(
+        "Name,Type,Accelerator Core,Start Time(us),Duration(us)\n"
+        "attention,FusedInferAttentionScore,AI_CORE,100,140\n"
+        "collective,HcomAllReduce,HCCL,170,100\n"
+        "mm,MatMul,AI_CORE,320,30\n",
+        encoding="utf-8",
+    )
+    report = triage.device_profile_stats(tmp_path, 9)
+    assert report["capture_span_ms"] == 0.25
+    assert report["capture_device_busy_ms"] == 0.20
+    assert report["capture_recognized_collective_busy_ms"] == 0.10
+    assert report["capture_host_forward_ms"] == 0.8
+    assert report["top_ops_summed_ms"][0] == ["FusedInferAttentionScore", 0.14]
+    assert "error" in triage.device_profile_stats(tmp_path, 8)
+
+
+def test_device_capture_ignores_warmup_and_stops_at_four_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "Finalize", lambda *args, **kwargs: None)
+    capture = probe.DeviceGraphCapture(str(tmp_path), 0, 9)
+
+    def start():
+        capture.output.mkdir()
+        capture.profiler = SimpleNamespace(stop=lambda: None)
+
+    monkeypatch.setattr(capture, "start", start)
+    shape = (9, "PIECEWISE", 16, None, 0)
+    batch = ("decode", 9)
+    capture.call(lambda: None, (), {}, batch, shape)
+    assert capture.matched == 0
+    (tmp_path / "windows.jsonl").write_text('["measured","start",9,1]\n', encoding="utf-8")
+    for step in range(15):
+        assert capture.call(lambda: step, (), {}, batch, shape) == step
+    meta = triage.read_json(capture.output / "capture.json")
+    assert meta["steps"] == 4
+    assert capture.profiler is None and capture.finished

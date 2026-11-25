@@ -3,6 +3,7 @@
 """Run or summarize the two-pass Qwen3-Omni A3 experiment from a source checkout."""
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -22,6 +23,7 @@ MODEL_REV = "26291f793822fb6be9555850f06dfe95f2d7e695"
 CI_IMAGE = "sha256:fdcede880eeba2b93d0dc3fc8532d0cb88dd1c2586f5f61cff7e923b7f55cd69"
 SOURCE_CONFIG = ROOT / "tests/dfx/perf/tests/test_qwen3_omni_no_async_chunk.json"
 TRACE_ENV = "VLLM_OMNI_A3_THINKER_TRACE_DIR"
+DEVICE_BATCH_ENV = "VLLM_OMNI_A3_DEVICE_PROFILE_BATCH"
 COUNTS = {1: 4, 4: 16, 8: 32, 16: 64}
 THINKER_GRAPH_SIZES = (1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64)
 LIMIT = 4096
@@ -134,7 +136,7 @@ def preflight(directory, env, base_image_digest, model_dir):
     return runtime, model
 
 
-def make_config(concurrencies, model, graph_sizes=None):
+def make_config(concurrencies, model, graph_sizes=None, device_batch=None):
     (config,) = read_json(SOURCE_CONFIG)
     (workload,) = (row for row in config["benchmark_params"] if row["dataset_name"] == "random")
     payload = workload["extra_body"]["sampling_params_list"]
@@ -147,13 +149,13 @@ def make_config(concurrencies, model, graph_sizes=None):
         or not workload.get("ignore_eos")
     ):
         raise TriageError("pinned CI workload does not have the expected token contract")
-    for concurrency in concurrencies:
+    for concurrency in [8] if device_batch else concurrencies:
         index = workload["max_concurrency"].index(concurrency)
         if workload["num_prompts"][index] != COUNTS[concurrency]:
             raise TriageError(f"unexpected CI request count at c={concurrency}")
     workload["max_concurrency"] = concurrencies
-    workload["num_prompts"] = [COUNTS[c] for c in concurrencies]
-    workload["num_warmups"] = [max(2, c) for c in concurrencies]
+    workload["num_prompts"] = [device_batch] if device_batch else [COUNTS[c] for c in concurrencies]
+    workload["num_warmups"] = [2] if device_batch else [max(2, c) for c in concurrencies]
     workload.pop("baseline", None)
     config["benchmark_params"] = [workload]
     server = config["server_params"]
@@ -221,7 +223,7 @@ def log_metrics(path):
     return rows, {"runner_v2_tp": sorted(runner_roles), "acl_graph_tp": sorted(graph_roles)}, errors
 
 
-def performance(directory, log, concurrencies):
+def performance(directory, log, concurrencies, expected_counts=COUNTS):
     timings, graph, errors = log_metrics(log)
     artifacts = defaultdict(list)
     for path in directory.glob("result_*.json"):
@@ -229,7 +231,7 @@ def performance(directory, log, concurrencies):
             artifacts[int(match.group(1))].append(path)
     cases = {}
     for c in concurrencies:
-        count = COUNTS[c]
+        count = expected_counts[c]
         paths = artifacts[c]
         if len(paths) != 1:
             cases[c] = {"error": f"expected one result artifact, found {len(paths)}"}
@@ -412,12 +414,14 @@ def compact_timings(timings):
     return compact
 
 
-def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None):
+def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None, device_batch=None):
     directory.mkdir()
     config = directory / "config.json"
     log = directory / "run.log"
-    write_json(config, make_config(concurrencies, model, graph_sizes))
+    write_json(config, make_config(concurrencies, model, graph_sizes, device_batch))
     process_env = {**env, "BENCHMARK_DIR": str(directory)}
+    if device_batch:
+        process_env[DEVICE_BATCH_ENV] = str(device_batch)
     if probe:
         trace = directory / "trace"
         trace.mkdir()
@@ -443,7 +447,9 @@ def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None):
             stderr=subprocess.STDOUT,
             check=False,
         ).returncode
-    cases, graph, errors = performance(directory, log, concurrencies)
+    cases, graph, errors = performance(
+        directory, log, concurrencies, {device_batch: device_batch} if device_batch else COUNTS
+    )
     result = {
         "concurrencies": concurrencies,
         "verdict": verdict(cases) if rc == 0 else "invalid",
@@ -454,7 +460,8 @@ def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None):
     }
     if graph_sizes is not None:
         result["verdict"] = "valid" if rc == 0 and not any("error" in case for case in cases.values()) else "invalid"
-        result["graphs"], result["probe_gaps"] = summarize_graphs(trace, concurrency=8, batches=(8,))
+        target = device_batch or 8
+        result["graphs"], result["probe_gaps"] = summarize_graphs(trace, concurrency=target, batches=(target,))
     elif probe:
         timings, gaps = summarize_trace(trace)
         write_json(trace / "timing-summary.json", timings)
@@ -490,6 +497,113 @@ def run_graph_size_ab(directory, env, model):
     return {"verdict": "valid", "arms": arms}
 
 
+def span_us(intervals):
+    intervals.sort()
+    begin, end = intervals[0]
+    busy = 0.0
+    for left, right in intervals[1:]:
+        if left > end:
+            busy += end - begin
+            begin, end = left, right
+        else:
+            end = max(end, right)
+    return busy + end - begin, end - intervals[0][0]
+
+
+def device_profile_stats(directory, batch):
+    capture = directory / "capture.json"
+    if not capture.is_file():
+        return {"error": "profiler did not flush a capture"}
+    metadata = read_json(capture)
+    steps = metadata["steps"]
+    if metadata["batch"] != batch or metadata["graph_tokens"] != 16 or steps != 4:
+        return {"error": "expected four contiguous matching graph calls", "steps": steps}
+    paths = list(directory.rglob("kernel_details.csv"))
+    if len(paths) != 1:
+        return {"error": "expected one kernel_details.csv", "files": len(paths)}
+    with paths[0].open(encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        columns = {re.sub(r"[^a-z]", "", name.lower()): name for name in reader.fieldnames or []}
+        start_key = columns.get("starttimeus") or columns.get("taskstarttimeus")
+        duration_key = columns.get("durationus") or columns.get("taskdurationus")
+        name_key = columns.get("type") or columns.get("optype") or columns.get("name")
+        core_key = columns.get("acceleratorcore")
+        if not all((start_key, duration_key, name_key)):
+            return {"error": "unexpected CANN kernel CSV columns", "columns": list(columns)[:12]}
+        intervals, collective_intervals = [], []
+        operators = defaultdict(float)
+        for row in reader:
+            try:
+                start, duration = float(row[start_key].strip("\t")), float(row[duration_key].strip("\t"))
+            except (AttributeError, ValueError):
+                continue
+            if not math.isfinite(start) or not math.isfinite(duration) or duration <= 0:
+                continue
+            name = row[name_key] or "unknown"
+            identity = (name + " " + (row.get(core_key) or "")).lower()
+            intervals.append((start, start + duration))
+            if any(
+                token in identity
+                for token in ("hccl", "hcom", "allreduce", "all_reduce", "allgather", "reduce_scatter")
+            ):
+                collective_intervals.append(intervals[-1])
+            operators[re.sub(r"[^A-Za-z0-9_.:+/-]", "_", name)[:64]] += duration
+    if not intervals:
+        return {"error": "empty device kernel samples"}
+    busy, span = span_us(intervals)
+    collective_busy = span_us(collective_intervals)[0] if collective_intervals else 0.0
+    return {
+        "steps": steps,
+        "kernel_count": len(intervals),
+        "capture_host_forward_ms": round(sum(metadata["host_forward_ns"]) / 1e6, 2),
+        "capture_span_ms": round(span / 1000, 2),
+        "capture_device_busy_ms": round(busy / 1000, 2),
+        "capture_recognized_collective_busy_ms": round(collective_busy / 1000, 2),
+        "top_ops_summed_ms": [
+            [name, round(total / 1000, 2)] for name, total in sorted(operators.items(), key=lambda item: -item[1])[:4]
+        ],
+    }
+
+
+def run_device_compare(directory, env, model):
+    arms = {}
+    sizes = tuple(size for size in THINKER_GRAPH_SIZES if size != 8)
+    for batch in (8, 9):
+        arm = directory / f"batch-{batch}"
+        result = run_cases(arm, env, model, [batch], probe=True, graph_sizes=sizes, device_batch=batch)
+        graphs = result["graphs"]
+        graph_p50 = {}
+        expected_graphs = set()
+        ranks = {}
+        for rank in (0, 1):
+            expected = f"{batch}/tp{rank}/{batch}/PIECEWISE/16/None/graph_manager"
+            expected_graphs.add(expected)
+            graph_p50[f"tp{rank}"] = graphs.get(expected, {}).get("forward_p50_ms")
+            ranks[f"tp{rank}"] = device_profile_stats(arm / "trace" / f"device-tp{rank}", batch)
+        if set(graphs) != expected_graphs:
+            result["probe_gaps"].append(
+                "measured graph dispatch differs from the expected fixed 16-token PIECEWISE graph"
+            )
+        arms[batch] = {
+            "case": result["cases"][batch],
+            "profile_gaps": result["probe_gaps"],
+            "forward_p50_ms": graph_p50,
+            "device": ranks,
+            "errors": result["errors"],
+        }
+        write_json(directory / "device-results.json", arms)
+        if (
+            result["verdict"] != "valid"
+            or result["probe_gaps"]
+            or not all(graph_p50.values())
+            or any("error" in row for row in ranks.values())
+        ):
+            return {"verdict": "invalid", "failed_batch": batch, "arms": arms}
+    fast, slow = arms[8]["forward_p50_ms"], arms[9]["forward_p50_ms"]
+    representative = all(slow[rank] >= 100 and slow[rank] >= 2 * fast[rank] for rank in fast)
+    return {"verdict": "valid", "slow_step_reproduced": representative, "arms": arms}
+
+
 def emit(summary):
     compact = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
     if len(compact.encode()) + len("A3_SUMMARY_BEGIN\n\nA3_SUMMARY_END\n") > LIMIT:
@@ -506,7 +620,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "phase",
-        choices=("check", "reproduce", "profile", "replay", "summarize-trace", "summarize-graphs", "graph-size-ab"),
+        choices=(
+            "check",
+            "reproduce",
+            "profile",
+            "replay",
+            "summarize-trace",
+            "summarize-graphs",
+            "graph-size-ab",
+            "device-compare",
+        ),
     )
     parser.add_argument("--output", type=Path, help="new directory for local logs and results")
     parser.add_argument("--first-pass", type=Path, help="first-pass summary.json required for profile")
@@ -554,6 +677,7 @@ def main():
         output_created = True
         env = os.environ.copy()
         env.pop(TRACE_ENV, None)
+        env.pop(DEVICE_BATCH_ENV, None)
         env.update(
             PYTHONPATH=os.pathsep.join(filter(None, (str(ROOT), env.get("PYTHONPATH")))),
             HF_HUB_OFFLINE="1",
@@ -573,6 +697,8 @@ def main():
             run = {"verdict": "ready"}
         elif args.phase == "graph-size-ab":
             run = run_graph_size_ab(directory, env, model)
+        elif args.phase == "device-compare":
+            run = run_device_compare(directory, env, model)
         elif args.phase == "reproduce":
             run = run_cases(directory / "initial", env, model, [8, 16], probe=False)
             if run["verdict"] == "near_normal" and runtime["ci_reference_match"]:

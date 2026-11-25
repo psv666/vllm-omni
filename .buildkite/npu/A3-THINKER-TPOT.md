@@ -108,3 +108,15 @@ python .buildkite/npu/scripts/qwen3_omni_a3_triage.py graph-size-ab \
 ```
 
 A 保留 Thinker 的 8-token bucket。B 只从 Thinker 的 `prefill_cudagraph_capture_token_sizes` 移除尺寸 8。两组均为 no-chunk `c=8, n=32`。脚本仅用实测 `batch=8`、8 个调度 token 的 PIECEWISE 步判定，要求 A 选中 8-token 图、B 选中 16-token 图。回写 stdout 的完整摘要。若脚本给出 `invalid`，回写摘要并保留日志，等待本地协调端处理。
+
+
+## 同一 16-token 图的设备侧对照
+
+在原 A3 容器和同一组 NPU 上用协调端给的提交执行以下命令。脚本依次运行 `c=8,n=8` 和 `c=9,n=9`，保持 Thinker 的 PIECEWISE 图尺寸一致。每组经过两条 warmup 请求后，用原 CI 的输入和输出长度测一批。两个 TP worker 各在连续命中目标形状后采四步 NPU trace。
+
+```bash
+python .buildkite/npu/scripts/qwen3_omni_a3_triage.py device-compare \
+  --output "$run_dir/device-compare" "${runtime_args[@]}"
+```
+
+回写完整 `A3_SUMMARY`。`slow_step_reproduced` 标记缩小后的负载是否再现慢档。摘要包含同一采样窗内的设备活跃时间并集、设备时间跨度、识别到的通信占用和 top 算子。算子累计时间可能重叠，采样耗时用于定位。若采样不足、分派不符或 profiler 导出失败，回写现有摘要和缺项。所有 CSV 和 trace 留在 A3。
