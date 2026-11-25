@@ -1,0 +1,76 @@
+{
+  "model": "Qwen3-Omni-30B-A3B-Instruct",
+  "hardware": "3 x Ascend910B1,64GiB",
+  "precision": "BF16",
+  "workload": "non-duplex SeedTTS English, async chunk and Thinker prefix caching enabled",
+  "samples_per_run": {
+    "1": 20,
+    "16": 320,
+    "32": 1088
+  },
+  "metric": "mean TTFT in milliseconds",
+  "stages": [
+    {
+      "label": "Original benchmark configuration;1 API worker",
+      "independent_server_starts": 3,
+      "aggregation": "median of run means",
+      "mean_ttft_ms": {
+        "1": 180.63487348845229,
+        "16": 323.4307618047751,
+        "32": 372.12867795546225
+      }
+    },
+    {
+      "label": "Graph settings only; no runtime source patch;1 API worker",
+      "independent_server_starts": 1,
+      "aggregation": "single exploratory run",
+      "mean_ttft_ms": {
+        "1": 66.96498297387734,
+        "16": 114.69574583534268,
+        "32": 137.93349495373312
+      }
+    },
+    {
+      "label": "Graphs + synchronous Thinker scheduling + prefix-copy runtime patch;1 API worker",
+      "independent_server_starts": 1,
+      "aggregation": "single exploratory run",
+      "mean_ttft_ms": {
+        "1": 65.61147653264925,
+        "16": 83.3214424434118,
+        "32": 90.49047089459184
+      }
+    },
+    {
+      "label": "Final combined runtime/profile configuration;2 API workers",
+      "independent_server_starts": 3,
+      "aggregation": "median of run means",
+      "mean_ttft_ms": {
+        "1": 62.42177198873833,
+        "16": 83.00324784577242,
+        "32": 89.19661565339672
+      }
+    }
+  ],
+  "limits": [
+    "Intermediate rows are exploratory, not independently repeated full acceptance results.",
+    "Warmup and preceding phase order differ; do not subtract adjacent rows as causal contributions.",
+    "The third row changes both native scheduling and cache-copy code.",
+    "The frontend exploration changed API worker count and renderer worker settings; standalone admission/API-worker gains remain unisolated.",
+    "Existing measured stack uses Omni e5f80c9 plus runtime patches, vLLM62d4bc3c and Ascend19c063b5. These are archived measurements, not new runs at the PR tip."
+  ],
+  "shipped_profile": "vllm_omni/deploy/qwen3_omni_moe_ascend_ttft.yaml",
+  "profile_validation": {
+    "profile": "vllm_omni/deploy/qwen3_omni_moe_ascend_ttft.yaml",
+    "npu_stages_and_connectors_match_measured_deployment": true,
+    "other_platform_effective_configs_match_default": true,
+    "legacy_and_structured_projection_preserve_graph_buckets": true,
+    "prefix_caching": true,
+    "thinker_async_scheduling": false,
+    "async_chunk": true,
+    "tensor_parallel_size": 2,
+    "decode_capture_buckets": 11,
+    "prefill_capture_buckets": 36,
+    "scope": "CPU config loading and effective argument projection only; no new model/performance run."
+  },
+  "profile_introduced_in_commit": "60e12866fd32a4be63e8311c37216b667a28aed6"
+}
