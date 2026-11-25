@@ -1,0 +1,63 @@
+{
+  "original_runs": [
+    {
+      "samples": 1088,
+      "mean_wer": 0.03244718697842987,
+      "mean_sim": 0.8223066331051728
+    },
+    {
+      "samples": 1088,
+      "mean_wer": 0.03398925841075495,
+      "mean_sim": 0.8225513731458169
+    },
+    {
+      "samples": 1088,
+      "mean_wer": 0.03183062842704757,
+      "mean_sim": 0.8218782037386999
+    }
+  ],
+  "optimized_runs": [
+    {
+      "samples": 1088,
+      "mean_wer": 0.032021054065543064,
+      "mean_sim": 0.8226183719166061
+    },
+    {
+      "samples": 1088,
+      "mean_wer": 0.033422035131046184,
+      "mean_sim": 0.8224970521405339
+    },
+    {
+      "samples": 1088,
+      "mean_wer": 0.03335044107967272,
+      "mean_sim": 0.8223398165667758
+    }
+  ],
+  "paired_differences": {
+    "wer": {
+      "candidate_minus_original": 0.0001754854866765266,
+      "paired_bootstrap_95ci": [
+        -0.003244504664904239,
+        0.0040307566816854745
+      ],
+      "samples": 1088,
+      "repetitions_per_sample": 3,
+      "bootstrap_replicates": 4000,
+      "interpretation": "descriptive interval; no post-hoc noninferiority margin"
+    },
+    "sim": {
+      "candidate_minus_original": 0.00023967687807538752,
+      "paired_bootstrap_95ci": [
+        -0.00024811397580539683,
+        0.0007172729546094646
+      ],
+      "samples": 1088,
+      "repetitions_per_sample": 3,
+      "bootstrap_replicates": 4000,
+      "interpretation": "descriptive interval; no post-hoc noninferiority margin"
+    }
+  },
+  "absolute_gates_passed": true,
+  "text_difference_count": 1,
+  "text_difference_scope": "same terminal punctuation difference in each run; no sample IDs or text included"
+}
