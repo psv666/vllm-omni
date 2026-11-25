@@ -1,0 +1,78 @@
+{
+  "head": "7775c0ac045e38b51705f83082734b9646791674",
+  "profile": "vllm_omni/deploy/qwen3_omni_moe_ascend_ttft.yaml",
+  "hardware": "3 x Ascend910B1 (64GiB)",
+  "model": "Qwen3-Omni-30B-A3B-Instruct",
+  "precision": "BF16; all three stage initialization logs report torch.bfloat16",
+  "topology": "Thinker TP2; Talker/Code2Wav share the third card",
+  "api_workers": 2,
+  "thinker_async_scheduling": true,
+  "dependencies": {
+    "vllm": "62d4bc3c7e33b1b6c906e233e6af2d3506c482ca",
+    "ascend": "19c063b5471f90e158e163d27c2e0cc54af1700e"
+  },
+  "startup": "fresh server and backend processes; existing disk compilation cache reused; all device graphs newly captured",
+  "observer": "local return-preserving wrappers around native CudaGraphManager.capture/run_fullgraph; no source-tree changes; correctness observation only",
+  "entrypoint": "python -m vllm_omni.entrypoints.cli.main serve; console-script-equivalent entrypoint for the documented profile/API-worker configuration",
+  "operational_flags": "Local checkpoint path, loopback port19041, served-model alias, startup timeouts and cached-token usage details; no profile overrides.",
+  "graph_verification": {
+    "thinker_tp_workers_with_capture_and_serving_replay": 2,
+    "full_decode_capture_graphs_per_worker": 11,
+    "serving_full_decode_replay_count": 84,
+    "all_serving_replays_use_full_mode_and_one_token_per_request": true,
+    "observed_in_all_four_request_phases": true,
+    "native_graph_types": [
+      "vllm_ascend.compilation.updatable_graph.UpdatableGraph"
+    ],
+    "per_phase_replay_counts": {
+      "cold_miss": 20,
+      "shared_prefix_hit": 22,
+      "buffer_reuse_forward": 20,
+      "hit_after_buffer_reuse": 22
+    }
+  },
+  "requests": [
+    {
+      "label": "cold_miss",
+      "cached_tokens": 0,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "shared_prefix_hit",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "buffer_reuse_forward",
+      "cached_tokens": 0,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "hit_after_buffer_reuse",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    }
+  ],
+  "hit_audio_pcm_matches_initial_miss": true,
+  "hit_after_other_forward_audio_pcm_matches_initial_miss": true,
+  "scope": "One fresh-process three-card startup and four sequential correctness requests. No full performance or quality matrix rerun; no patch-only speedup claim.",
+  "runtime_scheduler": "vllm_omni.core.sched.omni_ar_scheduler.OmniARAsyncScheduler",
+  "configuration_validation": {
+    "profile": "vllm_omni/deploy/qwen3_omni_moe_ascend_ttft.yaml",
+    "only_npu_difference_from_historical_deployment": "Thinker scheduling inherits the default instead of an explicit false override",
+    "other_platform_effective_configs_match_default": true,
+    "legacy_and_structured_projection_preserve_graph_buckets": true,
+    "prefix_caching": true,
+    "thinker_async_scheduling": true,
+    "async_chunk": true,
+    "tensor_parallel_size": 2,
+    "decode_capture_buckets": 11,
+    "prefill_capture_buckets": 36,
+    "scope": "CPU config loading and effective argument projection only; no new model/performance run."
+  },
+  "change": "Removed the Thinker async_scheduling=false override; inherit default scheduling. Historical combined performance figures retain their measured synchronous setting."
+}
