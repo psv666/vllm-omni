@@ -1,0 +1,95 @@
+{
+  "source_head": "b7be39970f26b4e884c6373a8eb552c6db3316c3",
+  "scope": "Current-head correctness validation; full performance and quality matrices were not rerun.",
+  "cpu": {
+    "passed": 357,
+    "skipped": 1,
+    "deselected_preexisting_fixture_errors": 9,
+    "negative_control": "Disabling Janus wakeups makes the corrected consumer-wakeup test fail with TimeoutError."
+  },
+  "native_cache_component": {
+    "hardware": "Ascend910B1",
+    "dtype": "bfloat16",
+    "copy_stream": "torch_npu.npu.streams.Stream",
+    "reference": "Independent eager CPU reference; exact hidden-state and multimodal tensor equality.",
+    "checks": {
+      "miss_after_buffer_overwrite_hidden_matches_eager": true,
+      "miss_after_buffer_overwrite_multimodal_matches_eager": true,
+      "shared_prefix_hit_after_buffer_reuse_hidden_matches_eager": true,
+      "shared_prefix_hit_after_buffer_reuse_multimodal_matches_eager": true,
+      "staging_reuse_1_hidden_matches_eager": true,
+      "staging_reuse_1_multimodal_matches_eager": true,
+      "staging_reuse_2_hidden_matches_eager": true,
+      "staging_reuse_2_multimodal_matches_eager": true,
+      "staging_reuse_4_hidden_matches_eager": true,
+      "staging_reuse_4_multimodal_matches_eager": true,
+      "staging_reuse_5_hidden_matches_eager": true,
+      "staging_reuse_5_multimodal_matches_eager": true,
+      "staging_reuse_7_hidden_matches_eager": true,
+      "staging_reuse_7_multimodal_matches_eager": true,
+      "staging_reuse_8_hidden_matches_eager": true,
+      "staging_reuse_8_multimodal_matches_eager": true,
+      "staging_reuse_10_hidden_matches_eager": true,
+      "staging_reuse_10_multimodal_matches_eager": true,
+      "staging_reuse_11_hidden_matches_eager": true,
+      "staging_reuse_11_multimodal_matches_eager": true,
+      "twelve_staging_reuses_including_four_discards": true,
+      "clean_shutdown": true
+    }
+  },
+  "full_model_smoke": {
+    "hardware": "2 x Ascend 910B1",
+    "dtype": "BF16",
+    "model": "Qwen3-Omni-30B-A3B-Instruct",
+    "topology": "two-card correctness smoke: Thinker TP2; Talker and Code2Wav share the second Thinker card",
+    "correctness_only_deployment_changes": {
+      "talker": {
+        "devices": "1",
+        "gpu_memory_utilization": 0.2
+      },
+      "code2wav": {
+        "devices": "1",
+        "gpu_memory_utilization": 0.1
+      }
+    },
+    "preserved_settings": [
+      "Thinker TP2",
+      "async chunk",
+      "prefix caching",
+      "graph modes and capture sizes",
+      "two API workers",
+      "complete text/audio output"
+    ],
+    "requests": 4,
+    "all_text_matches_frozen_reference": true,
+    "all_complete_text_and_audio": true,
+    "repeat_hit_audio_pcm_matches_initial_miss": true,
+    "hit_after_other_forward_audio_pcm_matches_initial_miss": true,
+    "cases": [
+      {
+        "label": "cold_miss",
+        "cached_tokens": 0,
+        "text_matches_frozen_reference": true,
+        "complete_text_and_audio": true
+      },
+      {
+        "label": "shared_prefix_hit",
+        "cached_tokens": 128,
+        "text_matches_frozen_reference": true,
+        "complete_text_and_audio": true
+      },
+      {
+        "label": "buffer_reuse_forward",
+        "cached_tokens": 0,
+        "text_matches_frozen_reference": true,
+        "complete_text_and_audio": true
+      },
+      {
+        "label": "hit_after_buffer_reuse",
+        "cached_tokens": 128,
+        "text_matches_frozen_reference": true,
+        "complete_text_and_audio": true
+      }
+    ]
+  }
+}
