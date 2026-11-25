@@ -149,13 +149,14 @@ def make_config(concurrencies, model, graph_sizes=None, device_batch=None):
         or not workload.get("ignore_eos")
     ):
         raise TriageError("pinned CI workload does not have the expected token contract")
-    for concurrency in [8] if device_batch else concurrencies:
+    short_device_run = device_batch in (8, 9)
+    for concurrency in [8] if short_device_run else concurrencies:
         index = workload["max_concurrency"].index(concurrency)
         if workload["num_prompts"][index] != COUNTS[concurrency]:
             raise TriageError(f"unexpected CI request count at c={concurrency}")
     workload["max_concurrency"] = concurrencies
-    workload["num_prompts"] = [device_batch] if device_batch else [COUNTS[c] for c in concurrencies]
-    workload["num_warmups"] = [2] if device_batch else [max(2, c) for c in concurrencies]
+    workload["num_prompts"] = [device_batch] if short_device_run else [COUNTS[c] for c in concurrencies]
+    workload["num_warmups"] = [2] if short_device_run else [max(2, c) for c in concurrencies]
     workload.pop("baseline", None)
     config["benchmark_params"] = [workload]
     server = config["server_params"]
@@ -448,7 +449,7 @@ def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None, dev
             check=False,
         ).returncode
     cases, graph, errors = performance(
-        directory, log, concurrencies, {device_batch: device_batch} if device_batch else COUNTS
+        directory, log, concurrencies, {device_batch: device_batch} if device_batch in (8, 9) else COUNTS
     )
     result = {
         "concurrencies": concurrencies,
@@ -458,7 +459,7 @@ def run_cases(directory, env, model, concurrencies, probe, graph_sizes=None, dev
         **graph,
         "errors": errors,
     }
-    if graph_sizes is not None:
+    if graph_sizes is not None or device_batch is not None:
         result["verdict"] = "valid" if rc == 0 and not any("error" in case for case in cases.values()) else "invalid"
         target = device_batch or 8
         result["graphs"], result["probe_gaps"] = summarize_graphs(trace, concurrency=target, batches=(target,))
@@ -556,6 +557,8 @@ def device_profile_stats(directory, batch):
         "steps": steps,
         "kernel_count": len(intervals),
         "capture_host_forward_ms": round(sum(metadata["host_forward_ns"]) / 1e6, 2),
+        "capture_host_forward_p50_ms": round(statistics.median(metadata["host_forward_ns"]) / 1e6, 2),
+        "pre_capture_slow_ms": [round(value / 1e6, 2) for value in metadata.get("pre_capture_slow_ns", [])],
         "capture_span_ms": round(span / 1000, 2),
         "capture_device_busy_ms": round(busy / 1000, 2),
         "capture_recognized_collective_busy_ms": round(collective_busy / 1000, 2),
@@ -604,6 +607,40 @@ def run_device_compare(directory, env, model):
     return {"verdict": "valid", "slow_step_reproduced": representative, "arms": arms}
 
 
+def run_device_slow(directory, env, model):
+    arm_dir = directory / "batch-16"
+    result = run_cases(arm_dir, env, model, [16], probe=True, device_batch=16)
+    graphs = result["graphs"]
+    ranks = ("tp0", "tp1")
+    expected = {rank: f"16/{rank}/16/PIECEWISE/16/None/graph_manager" for rank in ranks}
+    graph_p50 = {rank: graphs.get(key, {}).get("forward_p50_ms") for rank, key in expected.items()}
+    summary = {
+        "case": result["cases"][16],
+        "forward_p50_ms": graph_p50,
+        "errors": result["errors"],
+        "probe_gaps": result["probe_gaps"],
+        "device": {},
+    }
+    if (
+        result["verdict"] != "valid"
+        or set(graphs) != set(expected.values())
+        or not all(value is not None and value >= 100 for value in graph_p50.values())
+    ):
+        return {"verdict": "slow_path_not_validated", **summary}
+    from torch_npu.profiler.profiler import analyse
+
+    for rank in ranks:
+        trace = arm_dir / "trace" / f"device-{rank}"
+        if trace.is_dir() and not any(trace.rglob("kernel_details.csv")):
+            analyse(str(trace))
+        summary["device"][rank] = device_profile_stats(trace, 16)
+    complete = all(
+        "error" not in row and len(row["pre_capture_slow_ms"]) == 2 and row["capture_host_forward_p50_ms"] >= 100
+        for row in summary["device"].values()
+    )
+    return {"verdict": "valid" if complete else "invalid", **summary}
+
+
 def emit(summary):
     compact = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
     if len(compact.encode()) + len("A3_SUMMARY_BEGIN\n\nA3_SUMMARY_END\n") > LIMIT:
@@ -629,6 +666,7 @@ def main():
             "summarize-graphs",
             "graph-size-ab",
             "device-compare",
+            "device-slow",
         ),
     )
     parser.add_argument("--output", type=Path, help="new directory for local logs and results")
@@ -699,6 +737,8 @@ def main():
             run = run_graph_size_ab(directory, env, model)
         elif args.phase == "device-compare":
             run = run_device_compare(directory, env, model)
+        elif args.phase == "device-slow":
+            run = run_device_slow(directory, env, model)
         elif args.phase == "reproduce":
             run = run_cases(directory / "initial", env, model, [8, 16], probe=False)
             if run["verdict"] == "near_normal" and runtime["ci_reference_match"]:
@@ -725,7 +765,11 @@ def main():
     if output_created:
         write_json(directory / "summary.json", summary)
     emit(summary)
-    return int("error" in summary or summary["run"]["verdict"] == "invalid" or bool(summary["run"].get("probe_gaps")))
+    return int(
+        "error" in summary
+        or summary["run"]["verdict"] in {"invalid", "slow_path_not_validated"}
+        or bool(summary["run"].get("probe_gaps"))
+    )
 
 
 if __name__ == "__main__":

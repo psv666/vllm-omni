@@ -126,6 +126,7 @@ class DeviceGraphCapture:
         self.measured = False
         self.finished = False
         self.matched = 0
+        self.slow_streak = []
         self.steps = 0
         self.dispatch_ns = []
         Finalize(None, self.close, exitpriority=20)
@@ -147,6 +148,7 @@ class DeviceGraphCapture:
             if self.profiler is not None:
                 self.close()
             self.matched = 0
+            self.slow_streak = []
             return call(*args, **kwargs)
         if not self.measured:
             windows = self.directory / "windows.jsonl"
@@ -160,6 +162,15 @@ class DeviceGraphCapture:
         self.matched += 1
         if self.matched <= 8:
             return call(*args, **kwargs)
+        if self.profiler is None and self.batch == 16 and len(self.slow_streak) < 2:
+            started = time.monotonic_ns()
+            result = call(*args, **kwargs)
+            elapsed = time.monotonic_ns() - started
+            if elapsed >= 100_000_000:
+                self.slow_streak.append(elapsed)
+            else:
+                self.slow_streak.clear()
+            return result
         if self.profiler is None:
             self.start()
         started = time.monotonic_ns()
@@ -182,7 +193,7 @@ class DeviceGraphCapture:
                 profiler_level=backend.ProfilerLevel.Level1,
                 data_simplification=True,
             ),
-            on_trace_ready=backend.tensorboard_trace_handler(str(self.output)),
+            on_trace_ready=backend.tensorboard_trace_handler(str(self.output), analyse_flag=self.batch != 16),
         )
         self.profiler.start()
 
@@ -194,7 +205,13 @@ class DeviceGraphCapture:
         profiler.stop()
         (self.output / "capture.json").write_text(
             json.dumps(
-                {"steps": self.steps, "graph_tokens": 16, "batch": self.batch, "host_forward_ns": self.dispatch_ns}
+                {
+                    "steps": self.steps,
+                    "graph_tokens": 16,
+                    "batch": self.batch,
+                    "host_forward_ns": self.dispatch_ns,
+                    "pre_capture_slow_ns": self.slow_streak,
+                }
             ),
             encoding="utf-8",
         )
@@ -203,7 +220,7 @@ class DeviceGraphCapture:
 def attach_worker_probe(runner, directory: str, rank: int) -> None:
     probe = ThinkerProbe(directory, f"tp{rank}")
     target = os.environ.get(DEVICE_BATCH_ENV)
-    device_capture = DeviceGraphCapture(directory, rank, int(target)) if target in {"8", "9"} else None
+    device_capture = DeviceGraphCapture(directory, rank, int(target)) if target in {"8", "9", "16"} else None
     execute = runner.execute_model
     sample = runner.sample_tokens
     prepare = runner.prepare_inputs

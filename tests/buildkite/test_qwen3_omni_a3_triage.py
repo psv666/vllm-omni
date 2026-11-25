@@ -320,3 +320,42 @@ def test_device_capture_ignores_warmup_and_stops_at_four_steps(tmp_path, monkeyp
     meta = triage.read_json(capture.output / "capture.json")
     assert meta["steps"] == 4
     assert capture.profiler is None and capture.finished
+
+
+def test_device_slow_keeps_original_workload(tmp_path):
+    (original,) = triage.make_config([16], tmp_path)
+    (instrumented,) = triage.make_config([16], tmp_path, device_batch=16)
+    assert original == instrumented
+    (workload,) = instrumented["benchmark_params"]
+    assert workload["num_prompts"] == [64] and workload["num_warmups"] == [16]
+
+
+def test_slow_capture_waits_for_two_slow_matching_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "Finalize", lambda *args, **kwargs: None)
+    cap = probe.DeviceGraphCapture(str(tmp_path), 0, 16)
+    (tmp_path / "windows.jsonl").write_text('["measured","start",16,1]\n', encoding="utf-8")
+    elapsed = 0
+    ticks = iter([25, 160, 25, 160, 170, 160, 160, 160, 160])
+    monkeypatch.setattr(probe.time, "monotonic_ns", lambda: elapsed)
+
+    def start():
+        cap.output.mkdir()
+        cap.profiler = SimpleNamespace(stop=lambda: None)
+
+    monkeypatch.setattr(cap, "start", start)
+    shape, batch = (16, "PIECEWISE", 16, None, 0), ("decode", 16)
+    for _ in range(8):
+        cap.call(lambda: None, (), {}, batch, shape)
+
+    def step():
+        nonlocal elapsed
+        elapsed += next(ticks) * 1_000_000
+
+    for _ in range(5):
+        cap.call(step, (), {}, batch, shape)
+        assert not cap.output.exists()
+    for _ in range(4):
+        cap.call(step, (), {}, batch, shape)
+    result = triage.read_json(cap.output / "capture.json")
+    assert result["pre_capture_slow_ns"] == [160_000_000, 170_000_000]
+    assert result["steps"] == 4
