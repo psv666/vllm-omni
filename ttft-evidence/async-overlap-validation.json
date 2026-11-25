@@ -1,0 +1,103 @@
+{
+  "head": "7775c0ac045e38b51705f83082734b9646791674",
+  "profile": "vllm_omni/deploy/qwen3_omni_moe_ascend_ttft.yaml",
+  "status": "passed",
+  "hardware": "3 x Ascend 910B1 (64 GiB)",
+  "model": "Qwen3-Omni-30B-A3B-Instruct",
+  "precision": "BF16; all three stage initialization logs report torch.bfloat16",
+  "topology": "Thinker TP2; Talker and Code2Wav share the third card",
+  "api_workers": 2,
+  "thinker_async_scheduling": true,
+  "runtime_thinker_scheduler": "OmniARAsyncScheduler",
+  "dependencies": {
+    "vllm": "62d4bc3c7e33b1b6c906e233e6af2d3506c482ca",
+    "ascend": "19c063b5471f90e158e163d27c2e0cc54af1700e"
+  },
+  "startup": "fresh server and backend processes; existing disk compilation cache reused; all device graphs newly captured",
+  "observer": "local return-preserving wrappers around native CudaGraphManager.capture/run_fullgraph and NPUOmniV2RunnerMixin.prepare_inputs; unpadded host batch metadata linked by descriptor identity; no tensor operations or source changes; correctness only",
+  "configuration": "Shipped optional TTFT YAML, no profile overrides; two API workers. Local checkpoint, loopback endpoint, startup timeouts and cached-token usage details.",
+  "client_overlap": {
+    "requested_concurrency": 4,
+    "peak_in_flight_requests": 4,
+    "four_request_intervals_share_common_overlap": true,
+    "common_overlap_seconds": 5.200590327
+  },
+  "graph_verification": {
+    "thinker_tp_workers_with_capture_and_serving_replay": 2,
+    "full_decode_capture_graphs_per_worker": 11,
+    "serving_full_decode_replay_count": 176,
+    "all_serving_replays_use_full_mode_and_one_token_per_request": true,
+    "observed_in_all_three_phases": true,
+    "actual_unpadded_batch_max_per_tp_worker_during_overlap": [
+      4,
+      4
+    ],
+    "multi_request_full_replays_during_overlap": 58,
+    "overlap_actual_batch_size_histogram": {
+      "1": 2,
+      "3": 4,
+      "4": 54
+    },
+    "actual_batch_metadata_linked_to_same_replay_descriptor": true,
+    "native_graph_types": [
+      "vllm_ascend.compilation.updatable_graph.UpdatableGraph"
+    ],
+    "per_phase_replay_counts": {
+      "prime": 58,
+      "overlap_c4": 60,
+      "post_overlap": 58
+    }
+  },
+  "requests": [
+    {
+      "label": "prime",
+      "cached_tokens": 0,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "overlap_0",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "overlap_1",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "overlap_2",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "overlap_3",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    },
+    {
+      "label": "post_overlap",
+      "cached_tokens": 128,
+      "text_matches_frozen_reference": true,
+      "complete_text_and_audio": true
+    }
+  ],
+  "audio_comparison": {
+    "concurrent_streams_bitwise_equal_to_prime": 2,
+    "concurrent_streams_with_pcm_difference_from_prime": 2,
+    "all_six_have_same_audio_frame_count": true,
+    "largest_absolute_pcm16_sample_difference": 96,
+    "rms_pcm16_differences_for_differing_streams": [
+      5.797154947018962,
+      5.797154947018962
+    ],
+    "interpretation": "Observed aggregate difference only; cause not isolated. This run validates complete outputs, not bitwise audio equivalence or quality equivalence."
+  },
+  "all_six_streams_end_with_done_and_stop": true,
+  "all_six_have_nonzero_valid_audio": true,
+  "scope": "One fresh-process three-card correctness run: one salted miss, four concurrent shared-prefix hits, one post-overlap hit. Actual unpadded batch metadata is linked by descriptor identity to successful native FULL replays on both TP workers. No performance or full quality matrix rerun; no speedup claim or cross-batch PCM-equivalence claim."
+}
