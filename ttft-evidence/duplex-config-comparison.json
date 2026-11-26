@@ -1,0 +1,335 @@
+{
+  "measured_head": "7775c0ac045e38b51705f83082734b9646791674",
+  "hardware": "3 x Ascend 910B1 (64GiB)",
+  "model": "Qwen3-Omni-30B-A3B-Instruct BF16",
+  "dependencies": {
+    "vllm": "62d4bc3c7e33b1b6c906e233e6af2d3506c482ca",
+    "ascend": "19c063b5471f90e158e163d27c2e0cc54af1700e"
+  },
+  "libraries": {
+    "torch": "2.10.0+cpu",
+    "torch-npu": "2.10.0.post7",
+    "vllm": "0.34.0+empty",
+    "transformers": "5.19.0",
+    "onnxruntime": "1.23.2 (experiment-local reuse of existing CPU package)"
+  },
+  "comparison": "Configuration only. Identical PR runtime, one API worker, default Thinker async scheduling. Original NPU prefix-off/PIECEWISE versus prefix-on/FULL_AND_PIECEWISE with 11 decode/36 prefill capture buckets.",
+  "topology": "Thinker TP2; Talker and Code2Wav share the third card.",
+  "duplex_selection": "Explicit V2 and session_mode=duplex overlay, as needed because bundled duplex profiles retain historical NPU V1 overrides.",
+  "valid_protocol_revision": 3,
+  "start_order": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline"
+  ],
+  "warmup": "Per fresh start: separate VAD interruption probe, then one English and one Mandarin session with two complete audio turns each; excluded from timing.",
+  "workload": "Two fixed authored repository speech fixtures, repeated in two-turn sessions. Per start: 4/8/8 sessions at C1/C4/C8, 40 timed responses. Repeated prefixes are reusable; this is not a full duplex dataset or unseen-prefix qualification.",
+  "metrics_origin": "Client monotonic before manual audio commit plus response.create; TTFT to first nonempty text, TTFP to first audio, RTF to last audio divided by actual output audio seconds. Real-time input collection is excluded.",
+  "results": {
+    "1": {
+      "ttft_ms": {
+        "baseline_independent_start_means": [
+          189.9148380907718,
+          188.45802318537608
+        ],
+        "candidate_independent_start_means": [
+          78.39879786479287,
+          78.91062129056081
+        ],
+        "baseline_mean": 189.18643063807394,
+        "candidate_mean": 78.65470957767684,
+        "reduction_percent": 58.424761589720745
+      },
+      "ttfp_ms": {
+        "baseline_independent_start_means": [
+          467.0536521298345,
+          462.0228784624487
+        ],
+        "candidate_independent_start_means": [
+          369.061002129456,
+          364.26471068989486
+        ],
+        "baseline_mean": 464.5382652961416,
+        "candidate_mean": 366.66285640967544,
+        "reduction_percent": 21.069396473522136
+      },
+      "rtf": {
+        "baseline_independent_start_means": [
+          0.9004075902760637,
+          0.8973054397403097
+        ],
+        "candidate_independent_start_means": [
+          0.8579428138622479,
+          0.8380938544147691
+        ],
+        "baseline_mean": 0.8988565150081866,
+        "candidate_mean": 0.8480183341385086,
+        "reduction_percent": 5.655872769550436
+      }
+    },
+    "4": {
+      "ttft_ms": {
+        "baseline_independent_start_means": [
+          262.723377571092,
+          262.23381831368897
+        ],
+        "candidate_independent_start_means": [
+          97.55686268908903,
+          96.85211841133423
+        ],
+        "baseline_mean": 262.4785979423905,
+        "candidate_mean": 97.20449055021163,
+        "reduction_percent": 62.966698499530104
+      },
+      "ttfp_ms": {
+        "baseline_independent_start_means": [
+          654.0632782853208,
+          653.7073830986628
+        ],
+        "candidate_independent_start_means": [
+          455.98156936466694,
+          467.74481440661475
+        ],
+        "baseline_mean": 653.8853306919918,
+        "candidate_mean": 461.86319188564084,
+        "reduction_percent": 29.366332259379234
+      },
+      "rtf": {
+        "baseline_independent_start_means": [
+          1.0524205489576082,
+          1.0560723665719307
+        ],
+        "candidate_independent_start_means": [
+          0.9356719692327692,
+          0.9518632214165887
+        ],
+        "baseline_mean": 1.0542464577647694,
+        "candidate_mean": 0.9437675953246789,
+        "reduction_percent": 10.479415095624757
+      }
+    },
+    "8": {
+      "ttft_ms": {
+        "baseline_independent_start_means": [
+          338.727684924379,
+          318.42823726765346
+        ],
+        "candidate_independent_start_means": [
+          139.33731435099617,
+          132.82638091186527
+        ],
+        "baseline_mean": 328.5779610960162,
+        "candidate_mean": 136.08184763143072,
+        "reduction_percent": 58.584608907575145
+      },
+      "ttfp_ms": {
+        "baseline_independent_start_means": [
+          802.6533947704593,
+          809.9599185661646
+        ],
+        "candidate_independent_start_means": [
+          583.0844876327319,
+          576.0589133424219
+        ],
+        "baseline_mean": 806.3066566683119,
+        "candidate_mean": 579.5717004875769,
+        "reduction_percent": 28.120189050356103
+      },
+      "rtf": {
+        "baseline_independent_start_means": [
+          1.2290860385933513,
+          1.1994356758464493
+        ],
+        "candidate_independent_start_means": [
+          1.0804498259335689,
+          1.07351436445931
+        ],
+        "baseline_mean": 1.2142608572199003,
+        "candidate_mean": 1.0769820951964393,
+        "reduction_percent": 11.305541244059068
+      }
+    }
+  },
+  "per_start": [
+    {
+      "arm": "baseline",
+      "index": 1,
+      "ready_seconds": 195.20802667713724,
+      "native_thinker_graph_memory_estimates_gib": [
+        0.12,
+        0.12
+      ],
+      "prefix_cache_counters_including_untimed_phases": {
+        "queries": 0.0,
+        "hits": 0.0
+      },
+      "interruption_passed": true,
+      "mean_metrics": {
+        "1": {
+          "ttft_ms": 189.914838,
+          "ttfp_ms": 467.053652,
+          "rtf": 0.900408
+        },
+        "4": {
+          "ttft_ms": 262.723378,
+          "ttfp_ms": 654.063278,
+          "rtf": 1.052421
+        },
+        "8": {
+          "ttft_ms": 338.727685,
+          "ttfp_ms": 802.653395,
+          "rtf": 1.229086
+        }
+      }
+    },
+    {
+      "arm": "candidate",
+      "index": 2,
+      "ready_seconds": 264.26968143112026,
+      "native_thinker_graph_memory_estimates_gib": [
+        1.13,
+        1.13
+      ],
+      "prefix_cache_counters_including_untimed_phases": {
+        "queries": 4182.0,
+        "hits": 896.0
+      },
+      "interruption_passed": true,
+      "mean_metrics": {
+        "1": {
+          "ttft_ms": 78.398798,
+          "ttfp_ms": 369.061002,
+          "rtf": 0.857943
+        },
+        "4": {
+          "ttft_ms": 97.556863,
+          "ttfp_ms": 455.981569,
+          "rtf": 0.935672
+        },
+        "8": {
+          "ttft_ms": 139.337314,
+          "ttfp_ms": 583.084488,
+          "rtf": 1.08045
+        }
+      }
+    },
+    {
+      "arm": "candidate",
+      "index": 3,
+      "ready_seconds": 240.24508400191553,
+      "native_thinker_graph_memory_estimates_gib": [
+        1.13,
+        1.13
+      ],
+      "prefix_cache_counters_including_untimed_phases": {
+        "queries": 4182.0,
+        "hits": 896.0
+      },
+      "interruption_passed": true,
+      "mean_metrics": {
+        "1": {
+          "ttft_ms": 78.910621,
+          "ttfp_ms": 364.264711,
+          "rtf": 0.838094
+        },
+        "4": {
+          "ttft_ms": 96.852118,
+          "ttfp_ms": 467.744814,
+          "rtf": 0.951863
+        },
+        "8": {
+          "ttft_ms": 132.826381,
+          "ttfp_ms": 576.058913,
+          "rtf": 1.073514
+        }
+      }
+    },
+    {
+      "arm": "baseline",
+      "index": 4,
+      "ready_seconds": 198.2081781211309,
+      "native_thinker_graph_memory_estimates_gib": [
+        0.12,
+        0.12
+      ],
+      "prefix_cache_counters_including_untimed_phases": {
+        "queries": 0.0,
+        "hits": 0.0
+      },
+      "interruption_passed": true,
+      "mean_metrics": {
+        "1": {
+          "ttft_ms": 188.458023,
+          "ttfp_ms": 462.022878,
+          "rtf": 0.897305
+        },
+        "4": {
+          "ttft_ms": 262.233818,
+          "ttfp_ms": 653.707383,
+          "rtf": 1.056072
+        },
+        "8": {
+          "ttft_ms": 318.428237,
+          "ttfp_ms": 809.959919,
+          "rtf": 1.199436
+        }
+      }
+    }
+  ],
+  "validation": {
+    "timed_responses": 160,
+    "generated_text_matches_fixture_transcript": 160,
+    "complete_nonzero_audio_responses": 160,
+    "successful_real_vad_interrupt_and_continuation_probes": 4
+  },
+  "audio_output_comparison": {
+    "1-baseline vs 4-baseline": {
+      "paired_responses": 40,
+      "exact_text_matches": 40,
+      "exact_pcm_matches": 30,
+      "same_audio_frame_count": 37,
+      "mean_output_audio_seconds_left": 2.050875,
+      "mean_output_audio_seconds_right": 2.060875,
+      "mean_commit_to_last_audio_seconds_left": 2.195609845616855,
+      "mean_commit_to_last_audio_seconds_right": 2.1845976682612673
+    },
+    "2-candidate vs 3-candidate": {
+      "paired_responses": 40,
+      "exact_text_matches": 40,
+      "exact_pcm_matches": 33,
+      "same_audio_frame_count": 39,
+      "mean_output_audio_seconds_left": 2.100875,
+      "mean_output_audio_seconds_right": 2.108875,
+      "mean_commit_to_last_audio_seconds_left": 2.0343990917608608,
+      "mean_commit_to_last_audio_seconds_right": 2.0405910721514373
+    },
+    "1-baseline vs 2-candidate": {
+      "paired_responses": 40,
+      "exact_text_matches": 40,
+      "exact_pcm_matches": 21,
+      "same_audio_frame_count": 26,
+      "mean_output_audio_seconds_left": 2.050875,
+      "mean_output_audio_seconds_right": 2.100875,
+      "mean_commit_to_last_audio_seconds_left": 2.195609845616855,
+      "mean_commit_to_last_audio_seconds_right": 2.0343990917608608
+    },
+    "4-baseline vs 3-candidate": {
+      "paired_responses": 40,
+      "exact_text_matches": 40,
+      "exact_pcm_matches": 20,
+      "same_audio_frame_count": 25,
+      "mean_output_audio_seconds_left": 2.060875,
+      "mean_output_audio_seconds_right": 2.108875,
+      "mean_commit_to_last_audio_seconds_left": 2.1845976682612673,
+      "mean_commit_to_last_audio_seconds_right": 2.0405910721514373
+    }
+  },
+  "limitations": [
+    "One hardware SKU and two authored speech contents; repeated sessions are latency samples, not independent quality contents.",
+    "No full audio ASR/WER or speaker-similarity acceptance; PCM and output duration differ, including within each repeated configuration.",
+    "RTF changes also reflect differing output duration.",
+    "Graph memory values are runtime estimates, not peak process memory; startup time includes process/model initialization and reuse of disk compilation cache.",
+    "Runtime patch-only and individual graph/cache contributions are not isolated."
+  ]
+}

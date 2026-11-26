@@ -1,0 +1,87 @@
+{
+  "reference_head": "7775c0ac045e38b51705f83082734b9646791674",
+  "default_yaml": "vllm_omni/deploy/qwen3_omni_moe.yaml",
+  "npu_resolved_deploy_identical_to_previously_tested_profile": true,
+  "npu_legacy_and_typed_runtime_projection_identical": true,
+  "non_npu_effective_configs_unchanged": [
+    "cuda",
+    "rocm",
+    "xpu",
+    "musa"
+  ],
+  "talker_code2wav_sampling_connectors_and_placement_unchanged": true,
+  "thinker_default_async_scheduling": true,
+  "decode_buckets": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    24,
+    32,
+    40,
+    48,
+    56,
+    64
+  ],
+  "prefill_buckets": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    24,
+    32,
+    40,
+    48,
+    56,
+    64,
+    128,
+    144,
+    160,
+    192,
+    256,
+    384,
+    512,
+    640,
+    768,
+    896,
+    1024,
+    1280,
+    1536,
+    1792,
+    2048,
+    2304,
+    2560,
+    2816,
+    3072,
+    3328,
+    3584,
+    3840,
+    4096,
+    4352,
+    4608
+  ],
+  "scope": "CPU loading and runtime projection equivalence. Existing NPU runs remain pinned to their measured head; no new hardware run is claimed for this YAML consolidation.",
+  "head": "ebdb2e543ffec1f7b48583756686a189c791d667",
+  "profile_removed": true,
+  "cpu_validation": {
+    "configuration_factory_merge_and_qwen_duplex_deployment": {
+      "passed": 672,
+      "failures": 0,
+      "errors": 0
+    },
+    "additional_qwen_downstream_duplex_projection": {
+      "passed": 1
+    },
+    "applicable_hooks_passed": 13,
+    "markdownlint_passed": true,
+    "diff_check_passed": true
+  },
+  "hardware_reuse": {
+    "measured_head": "7775c0ac045e38b51705f83082734b9646791674",
+    "new_device_run_for_yaml_consolidation": false,
+    "reason": "Complete effective NPU deployment and runtime projections match the measured configuration."
+  },
+  "broader_cpu_validation_scope": "Full config suite is not claimed clean. The CPU-only UnspecifiedPlatform backend-selection limitations reproduce as the same 26 failures at the reference head; separate broader omni-config attempts also hit sandbox sockets. Final scoped configuration suites pass."
+}
