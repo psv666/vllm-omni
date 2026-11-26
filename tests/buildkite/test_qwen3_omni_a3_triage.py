@@ -359,3 +359,35 @@ def test_slow_capture_waits_for_two_slow_matching_steps(tmp_path, monkeypatch):
     result = triage.read_json(cap.output / "capture.json")
     assert result["pre_capture_slow_ns"] == [160_000_000, 170_000_000]
     assert result["steps"] == 4
+
+
+@pytest.mark.parametrize("missing_tp1", [False, True])
+def test_slow_device_run_parses_captures_despite_low_run_medians(tmp_path, monkeypatch, missing_tp1):
+    keys = [f"16/tp{rank}/16/PIECEWISE/16/None/graph_manager" for rank in range(2)]
+    monkeypatch.setattr(
+        triage,
+        "run_cases",
+        lambda *args, **kwargs: {
+            "verdict": "valid",
+            "cases": {16: {"completed": 64}},
+            "errors": [],
+            "probe_gaps": [],
+            "graphs": dict(zip(keys, [{"forward_p50_ms": 26.9}, {"forward_p50_ms": 24.0}])),
+        },
+    )
+    seen = []
+
+    def stats(path, batch):
+        assert batch == 16
+        seen.append(path.name)
+        if missing_tp1 and path.name == "device-tp1":
+            return {"error": "profiler did not flush a capture"}
+        return {"pre_capture_slow_ms": [161.5, 164.3], "capture_host_forward_p50_ms": 169.0}
+
+    monkeypatch.setattr(triage, "offline_device_stats", stats)
+    summary = triage.run_device_slow(tmp_path, {}, tmp_path)
+    assert seen == ["device-tp0", "device-tp1"]
+    assert summary["forward_p50_ms"] == {"tp0": 26.9, "tp1": 24.0}
+    assert summary["device"]["tp0"]["slow_capture_validated"]
+    assert summary["device"]["tp1"]["slow_capture_validated"] is not missing_tp1
+    assert summary["verdict"] == ("partial" if missing_tp1 else "valid")

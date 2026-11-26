@@ -607,38 +607,50 @@ def run_device_compare(directory, env, model):
     return {"verdict": "valid", "slow_step_reproduced": representative, "arms": arms}
 
 
+def offline_device_stats(trace, batch):
+    if (trace / "capture.json").is_file() and not any(trace.rglob("kernel_details.csv")):
+        try:
+            from torch_npu.profiler.profiler import analyse
+
+            analyse(str(trace))
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            (trace / "offline-parse-error.log").write_text(str(exc) + "\n", encoding="utf-8")
+            return {"error": "offline profiler analysis failed", "category": type(exc).__name__}
+    return device_profile_stats(trace, batch)
+
+
 def run_device_slow(directory, env, model):
     arm_dir = directory / "batch-16"
     result = run_cases(arm_dir, env, model, [16], probe=True, device_batch=16)
     graphs = result["graphs"]
-    ranks = ("tp0", "tp1")
-    expected = {rank: f"16/{rank}/16/PIECEWISE/16/None/graph_manager" for rank in ranks}
-    graph_p50 = {rank: graphs.get(key, {}).get("forward_p50_ms") for rank, key in expected.items()}
     summary = {
         "case": result["cases"][16],
-        "forward_p50_ms": graph_p50,
+        "forward_p50_ms": {},
         "errors": result["errors"],
         "probe_gaps": result["probe_gaps"],
         "device": {},
     }
-    if (
-        result["verdict"] != "valid"
-        or set(graphs) != set(expected.values())
-        or not all(value is not None and value >= 100 for value in graph_p50.values())
-    ):
-        return {"verdict": "slow_path_not_validated", **summary}
-    from torch_npu.profiler.profiler import analyse
-
-    for rank in ranks:
-        trace = arm_dir / "trace" / f"device-{rank}"
-        if trace.is_dir() and not any(trace.rglob("kernel_details.csv")):
-            analyse(str(trace))
-        summary["device"][rank] = device_profile_stats(trace, 16)
-    complete = all(
-        "error" not in row and len(row["pre_capture_slow_ms"]) == 2 and row["capture_host_forward_p50_ms"] >= 100
-        for row in summary["device"].values()
-    )
-    return {"verdict": "valid" if complete else "invalid", **summary}
+    for rank in ("tp0", "tp1"):
+        key = f"16/{rank}/16/PIECEWISE/16/None/graph_manager"
+        summary["forward_p50_ms"][rank] = graphs.get(key, {}).get("forward_p50_ms")
+        row = offline_device_stats(arm_dir / "trace" / f"device-{rank}", 16)
+        before = row.get("pre_capture_slow_ms", [])
+        row["slow_capture_validated"] = (
+            "error" not in row
+            and key in graphs
+            and len(before) == 2
+            and all(value >= 100 for value in before)
+            and row["capture_host_forward_p50_ms"] >= 100
+        )
+        summary["device"][rank] = row
+    confirmed = sum(row["slow_capture_validated"] for row in summary["device"].values())
+    if confirmed == 2 and result["verdict"] == "valid":
+        verdict_name = "valid"
+    elif confirmed:
+        verdict_name = "partial"
+    else:
+        verdict_name = "slow_path_not_validated"
+    return {"verdict": verdict_name, **summary}
 
 
 def emit(summary):
@@ -767,7 +779,7 @@ def main():
     emit(summary)
     return int(
         "error" in summary
-        or summary["run"]["verdict"] in {"invalid", "slow_path_not_validated"}
+        or summary["run"]["verdict"] in {"invalid", "partial", "slow_path_not_validated"}
         or bool(summary["run"].get("probe_gaps"))
     )
 
